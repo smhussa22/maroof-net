@@ -1,0 +1,14 @@
+.idea/
+.vscode/
+.cmake/
+build/
+cmake-build-debug/
+CLAUDE.md
+goals.md
+*.pem
+*.wav
+logs/
+.secrets/
+.env
+.env.*
+.claude/
