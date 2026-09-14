@@ -1,7 +1,9 @@
 #ifndef MAROOF_NET_ENDPOINT_HH
 #define MAROOF_NET_ENDPOINT_HH
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <netinet/in.h>
@@ -31,6 +33,10 @@ namespace maroof::net
 
         bool operator==(const Endpoint&) const; // Needed for use as a map key.
 
+        // Hash value combining ip and port. Used by std::hash<Endpoint> below,
+        // which is what unordered_map<Endpoint, ...> reaches for.
+        std::size_t hash_value() const noexcept;
+
         ~Endpoint() = default;
         
         // The default versions are just fine
@@ -50,5 +56,25 @@ namespace maroof::net
     };
 
 } // namespace maroof::net
+
+// std::hash specialization so Endpoint works as a key in unordered_map/unordered_set
+// without callers having to provide a custom hasher. Must live in namespace std
+namespace std
+{
+
+    template <>
+    struct hash<maroof::net::Endpoint>
+    {
+
+        size_t operator()(const maroof::net::Endpoint& ep) const noexcept
+        {
+
+            return ep.hash_value();
+
+        }
+
+    };
+
+}
 
 #endif // MAROOF_NET_ENDPOINT_HH

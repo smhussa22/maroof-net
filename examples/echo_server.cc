@@ -1,6 +1,8 @@
-#include <maroof/net/UdpSocket.hh>
+#include <maroof/net/Connection.hh>
 #include <maroof/net/Endpoint.hh>
-#include <maroof/net/Error.hh>
+#include <maroof/net/PacketHeader.hh>
+#include <maroof/net/PacketType.hh>
+#include <maroof/net/UdpSocket.hh>
 
 #include <array>
 #include <charconv>
@@ -9,7 +11,9 @@
 #include <print>
 #include <span>
 #include <string_view>
-#include <system_error>
+#include <unordered_map>
+
+using namespace maroof::net;
 
 int main(int argc, char* argv[])
 {
@@ -23,42 +27,83 @@ int main(int argc, char* argv[])
 
     }
 
-    maroof::net::UdpSocket socket;
-
-    if (auto r { socket.bind(maroof::net::Endpoint("0.0.0.0", port)) }; !r.has_value())
+    UdpSocket socket;
+    if (auto r { socket.bind(Endpoint("0.0.0.0", port)) }; !r.has_value())
     {
-
         std::println("bind failed");
         return 1;
-
     }
 
     std::println("echo server listening on 0.0.0.0:{}", port);
-    std::array<std::byte, 2048> buf {};
+
+    std::unordered_map<Endpoint, Connection> connections;
+
+    std::array<std::byte, 2048> recv_buf {};
+    std::array<std::byte, 2048> send_buf {};
 
     for (;;)
     {
 
-        auto received = socket.recv_from(std::span<std::byte>(buf));
+        auto received = socket.recv_from(std::span<std::byte>(recv_buf));
         if (!received.has_value())
         {
-
-            std::println("recv_from error");
             continue;
-
         }
 
         const auto [bytes, peer] = received.value();
-        std::println("received {} bytes from {}", bytes, peer.to_string());
 
-        auto sent = socket.send_to(std::span<const std::byte>(buf.data(), bytes), peer);
-        if (!sent.has_value())
+        auto parsed = parse(std::span<const std::byte>(recv_buf.data(), bytes));
+        if (!parsed.has_value())
+        {
+            std::println("dropped malformed packet from {}", peer.to_string());
+            continue;
+        }
+
+        const auto& [header, payload] = parsed.value();
+
+        auto it = connections.find(peer);
+
+        // Hello: idempotent handshake. Create the Connection if new, or re-send
+        // HelloAck if it's a duplicate Hello (our previous ack was probably lost).
+        if (header.type == PacketType::Hello)
         {
 
-            std::println("send_to error");
+            if (it == connections.end())
+            {
+                it = connections.emplace(peer, Connection(peer)).first;
+            }
+
+            auto ack = it->second.accept_hello();
+            if (auto n { serialize(ack, {}, std::span<std::byte>(send_buf)) }; n.has_value())
+            {
+                socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
+                std::println("[handshake] accepted from {}", peer.to_string());
+            }
             continue;
-            
+
         }
+
+        // Any non-Hello packet from an unknown or non-Established peer is dropped.
+        if (it == connections.end() || it->second.state() != Connection::State::Established)
+        {
+            continue;
+        }
+
+        it->second.note_received(header.sequence);
+
+        if (header.type == PacketType::Data)
+        {
+
+            auto reply = it->second.make_data_header(header.channel_id);
+            if (auto n { serialize(reply, payload, std::span<std::byte>(send_buf)) }; n.has_value())
+            {
+                socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
+                std::println("[echo] {} bytes seq {} from {}", payload.size(), header.sequence, peer.to_string());
+            }
+
+        }
+
+        // Other packet types (Ack, Disconnect) are ignored in Phase 0.
 
     }
 

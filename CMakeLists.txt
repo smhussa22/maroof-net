@@ -9,6 +9,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(maroof_net STATIC
     src/net/UdpSocket.cc
     src/net/Endpoint.cc
+    src/net/Crc32.cc
+    src/net/PacketHeader.cc
+    src/net/Connection.cc
 )
 target_include_directories(maroof_net PUBLIC include/)
 
@@ -41,3 +44,7 @@ gtest_discover_tests(endpoint_test)
 add_executable(udp_socket_test tests/udp_socket_test.cc)
 target_link_libraries(udp_socket_test PRIVATE maroof_net GTest::gtest_main)
 gtest_discover_tests(udp_socket_test)
+
+add_executable(packet_header_test tests/packet_header_test.cc)
+target_link_libraries(packet_header_test PRIVATE maroof_net GTest::gtest_main)
+gtest_discover_tests(packet_header_test)

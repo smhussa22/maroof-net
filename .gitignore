@@ -5,6 +5,7 @@ build/
 cmake-build-debug/
 CLAUDE.md
 goals.md
+progress.md
 *.pem
 *.wav
 logs/

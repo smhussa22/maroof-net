@@ -102,7 +102,18 @@ namespace maroof::net
     {
 
         return m_ipv4_address == other.m_ipv4_address && m_port_number  == other.m_port_number;
-    
+
+    }
+
+    std::size_t Endpoint::hash_value() const noexcept
+    {
+
+        // Combine the two integer fields into one hash. 
+        // Follows what boost::hash_combine does: https://gist.github.com/eugene-malashkin/884e225ff57aca1b9cbe
+        const std::size_t h1 = std::hash<std::uint32_t> { }(m_ipv4_address);
+        const std::size_t h2 = std::hash<std::uint16_t> { }(m_port_number);
+        return h1 ^ (h2 + 0x9e3779b9u + (h1 << 6) + (h1 >> 2));
+
     }
 
 } // namespace maroof::net
