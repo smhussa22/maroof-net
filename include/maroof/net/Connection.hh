@@ -3,8 +3,10 @@
 
 #include <maroof/net/Endpoint.hh>
 #include <maroof/net/PacketHeader.hh>
+#include <maroof/net/PendingPacket.hh>
 
 #include <cstdint>
+// #include <deque>
 
 namespace maroof::net
 {
@@ -24,9 +26,11 @@ namespace maroof::net
         // Disconnected -> Established via accept_hello  (server)
         enum class State : std::uint8_t
         {
+
             Disconnected,
             Connecting,
             Established,
+
         };
 
         explicit Connection(const Endpoint& peer);
@@ -66,6 +70,10 @@ namespace maroof::net
         State m_state { State::Disconnected };
         std::uint64_t m_next_send_seq { 0 };
         std::uint64_t m_highest_received_seq { 0 };
+        std::unordered_map<std::uint64_t, PendingPacket> m_sent_reliable {}; // in flight reliable packets awaiting ACK; seq number -> pendingpacket struct
+
+        // will need this if and probably when i add batching multiple commands
+        // std::deque<PendingPacket> m_outgoing_reliable {};                    // queued but not yet in flight reliable packets
 
     };
 
