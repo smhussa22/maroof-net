@@ -122,34 +122,73 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // Handshake done. Send one Data packet and wait for the echoed Data back.
-    auto data_header = conn.make_data_header(0);
+    // Handshake done. Send the payload as a RELIABLE Data packet - Connection
+    // tracks it in its pending map and tick() will retransmit if the Ack from
+    // the server doesn't come back in time.
     std::span<const std::byte> payload {
         reinterpret_cast<const std::byte*>(message.data()),
         message.size()
     };
 
-    auto n = serialize(data_header, payload, std::span<std::byte>(send_buf)).value();
-    if (!socket.send_to(std::span<const std::byte>(send_buf.data(), n), server).has_value())
+    auto reliable_bytes = conn.make_reliable_data(payload, 0);
+    if (!socket.send_to(reliable_bytes, server).has_value())
     {
         std::println("send Data failed");
         return 1;
     }
-    std::println("sent {} bytes seq {}: \"{}\"", message.size(), data_header.sequence, message);
+    std::println("sent {} bytes as reliable Data: \"{}\"", message.size(), message);
 
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (auto pkt = wait_for_packet_from(socket, server, std::span<std::byte>(recv_buf), deadline))
+    // Loop until we've received the echoed Data back OR too long has passed.
+    // On each pass: check retransmit timers (tick), then poll briefly for a
+    // packet. Ack packets clear pending state; the echoed Data ends the loop.
+    bool acked  = false;
+    bool echoed = false;
+    auto overall_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+
+    while (std::chrono::steady_clock::now() < overall_deadline && !echoed)
     {
-        if (pkt->header.type == PacketType::Data)
+
+        // Retransmit any packet whose timer fired since last tick.
+        auto retransmits = conn.tick(std::chrono::steady_clock::now());
+        for (auto bytes : retransmits)
+        {
+            socket.send_to(bytes, server).value();
+            std::println("[retransmit] {} bytes", bytes.size());
+        }
+
+        if (conn.state() == Connection::State::Disconnected)
+        {
+            std::println("connection dead: retransmit budget exhausted");
+            return 1;
+        }
+
+        // Poll for one packet with a short deadline so we come back to tick.
+        auto poll_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        auto pkt = wait_for_packet_from(socket, server, std::span<std::byte>(recv_buf), poll_deadline);
+        if (!pkt) continue;
+
+        if (pkt->header.type == PacketType::Ack)
+        {
+            conn.handle_ack(pkt->header.sequence);
+            acked = true;
+            std::println("[ack] server acknowledged seq {}", pkt->header.sequence);
+        }
+        else if (pkt->header.type == PacketType::Data)
         {
             conn.note_received(pkt->header.sequence);
             const std::string reply { reinterpret_cast<const char*>(pkt->payload.data()), pkt->payload.size() };
             std::println("received echo seq {}: \"{}\"", pkt->header.sequence, reply);
-            return 0;
+            echoed = true;
         }
+
     }
 
-    std::println("timeout waiting for echo");
-    return 1;
+    if (!echoed)
+    {
+        std::println("timeout waiting for echo (acked={})", acked);
+        return 1;
+    }
+
+    return 0;
 
 }

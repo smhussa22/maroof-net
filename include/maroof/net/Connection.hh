@@ -5,8 +5,12 @@
 #include <maroof/net/PacketHeader.hh>
 #include <maroof/net/PendingPacket.hh>
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
-// #include <deque>
+#include <span>
+#include <unordered_map>
+#include <vector>
 
 namespace maroof::net
 {
@@ -64,7 +68,45 @@ namespace maroof::net
         // bookkeeping and duplicate detection.
         void note_received(std::uint64_t sequence);
 
+        // Serialize a reliable Data packet with the given payload and register
+        // it for ACK tracking. Returns a span into the internally stored bytes
+        // that the caller should hand to socket.send_to. The span points into
+        // storage owned by this Connection; it stays valid until the packet is
+        // acked, the retransmit budget runs out, or another call to
+        // make_reliable_data / tick / handle_ack occurs (any of those may
+        // rehash or erase the entry). In practice: send the returned bytes
+        // immediately, then move on.
+        std::span<const std::byte> make_reliable_data(std::span<const std::byte> payload, std::uint8_t channel_id);
+
+        // Advance the retransmit timers. Call this on every main-loop iteration
+        // (or at least often enough that the shortest retransmit window won't
+        // be missed by much). For each unacked packet whose retransmit time
+        // has passed, this bumps its retry_count, pushes its next-fire out with
+        // exponential backoff, and adds a span of its bytes to the returned
+        // vector for the caller to send. If any packet has exceeded MAX_RETRIES,
+        // the Connection transitions to Disconnected and the caller should
+        // treat the peer as dead.
+        std::vector<std::span<const std::byte>> tick(std::chrono::steady_clock::time_point now);
+
+        // Peer acknowledged this sequence number. Remove the corresponding
+        // entry from the pending map. No-op if we don't have that sequence
+        // pending (duplicate ACK, or ACK for something we've already
+        // considered acked).
+        void handle_ack(std::uint64_t sequence);
+
+        // Build an Ack packet header acknowledging received_sequence. The Ack's
+        // own sequence field carries the acked sequence directly (we don't
+        // consume a fresh sequence number since Ack packets are stateless -
+        // they never get retransmit-tracked themselves).
+        PacketHeader make_ack(std::uint64_t received_sequence);
+
     private:
+
+        // Retransmit tuning. Initial timeout doubles per retry, capped at max.
+        // After MAX_RETRIES resends on the same packet, we give up on the peer.
+        static constexpr std::uint32_t MAX_RETRIES { 8 };
+        static constexpr std::chrono::milliseconds INITIAL_TIMEOUT { 100 };
+        static constexpr std::chrono::milliseconds MAX_TIMEOUT { 1600 };
 
         Endpoint m_peer;
         State m_state { State::Disconnected };

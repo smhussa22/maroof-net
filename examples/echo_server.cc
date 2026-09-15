@@ -94,6 +94,14 @@ int main(int argc, char* argv[])
         if (header.type == PacketType::Data)
         {
 
+            // First: acknowledge receipt so the client can stop retransmitting.
+            auto ack = it->second.make_ack(header.sequence);
+            if (auto n { serialize(ack, {}, std::span<std::byte>(send_buf)) }; n.has_value())
+            {
+                socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
+            }
+
+            // Then echo the payload back as a regular Data packet.
             auto reply = it->second.make_data_header(header.channel_id);
             if (auto n { serialize(reply, payload, std::span<std::byte>(send_buf)) }; n.has_value())
             {
@@ -103,7 +111,8 @@ int main(int argc, char* argv[])
 
         }
 
-        // Other packet types (Ack, Disconnect) are ignored in Phase 0.
+        // Ack packets from client (in response to our echoes) are silently dropped
+        // for now - the server doesn't track its own sends as reliable in this demo.
 
     }
 

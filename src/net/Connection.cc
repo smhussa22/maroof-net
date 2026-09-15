@@ -70,7 +70,84 @@ namespace maroof::net
             m_highest_received_seq = sequence;
 
         }
-    
+
+    }
+
+    std::span<const std::byte> Connection::make_reliable_data(std::span<const std::byte> payload, std::uint8_t channel_id)
+    {
+
+        // Grab the sequence BEFORE incrementing so it lines up with the header
+        const auto seq { m_next_send_seq++ };
+        PacketHeader header { seq, PacketType::Data, channel_id, 0 };
+
+        std::vector<std::byte> buf(PACKET_HEADER_WIRE_SIZE + payload.size());
+        serialize(header, payload, std::span<std::byte>(buf)).value();
+
+        PendingPacket pending 
+        {
+        
+            .serialized  { std::move(buf) },
+            .retransmit  { std::chrono::steady_clock::now() + INITIAL_TIMEOUT },
+            .retry_count { 0 },
+        
+        };
+
+        auto [it, inserted] = m_sent_reliable.emplace(seq, std::move(pending));
+
+        return std::span<const std::byte>(it->second.serialized);
+
+    }
+
+    std::vector<std::span<const std::byte>> Connection::tick(std::chrono::steady_clock::time_point now)
+    {
+
+        std::vector<std::span<const std::byte>> retransmits {};
+
+        for (auto& [seq, packet] : m_sent_reliable)
+        {
+
+            // timer hasn't fired yet for this one
+            if (packet.retransmit > now)
+            {
+
+                continue;
+            
+            }
+
+            // peer is unreachable
+            if (packet.retry_count >= MAX_RETRIES)
+            {
+
+                m_state = State::Disconnected;
+                return retransmits;
+
+            }
+
+            packet.retry_count++;
+
+            // compute exponential backoff for the next timer.
+            const std::uint32_t shift = packet.retry_count > 4u ? 4u : packet.retry_count;
+            packet.retransmit = now + INITIAL_TIMEOUT * (1u << shift);
+            retransmits.push_back(std::span<const std::byte>(packet.serialized));
+
+        }
+
+        return retransmits;
+
+    }
+
+    void Connection::handle_ack(std::uint64_t sequence)
+    {
+
+        m_sent_reliable.erase(sequence);
+
+    }
+
+    PacketHeader Connection::make_ack(std::uint64_t received_sequence)
+    {
+
+        return { received_sequence, PacketType::Ack, 0, 0 };
+
     }
 
 } // namespace maroof::net
