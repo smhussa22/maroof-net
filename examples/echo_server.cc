@@ -94,20 +94,24 @@ int main(int argc, char* argv[])
         if (header.type == PacketType::Data)
         {
 
-            // First: acknowledge receipt so the client can stop retransmitting.
+            // Ack unconditionally so peer stops retrying, even on duplicates.
             auto ack = it->second.make_ack(header.sequence);
             if (auto n { serialize(ack, {}, std::span<std::byte>(send_buf)) }; n.has_value())
             {
                 socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
             }
 
-            // Then echo the payload back as a regular Data packet.
-            auto reply = it->second.make_data_header(header.channel_id);
-            if (auto n { serialize(reply, payload, std::span<std::byte>(send_buf)) }; n.has_value())
-            {
-                socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
-                std::println("[echo] {} bytes seq {} from {}", payload.size(), header.sequence, peer.to_string());
-            }
+            // Dedup + reorder. Lambda fires once per in-order delivered payload.
+            it->second.receive_reliable_data(header.sequence, payload,
+                [&](std::span<const std::byte> p)
+                {
+                    auto reply = it->second.make_data_header(header.channel_id);
+                    if (auto n { serialize(reply, p, std::span<std::byte>(send_buf)) }; n.has_value())
+                    {
+                        socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
+                        std::println("[echo] {} bytes seq {} from {}", p.size(), header.sequence, peer.to_string());
+                    }
+                });
 
         }
 

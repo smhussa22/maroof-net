@@ -5,9 +5,13 @@
 #include <maroof/net/PacketHeader.hh>
 #include <maroof/net/PendingPacket.hh>
 
+#include <array>
+#include <bitset>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -100,6 +104,66 @@ namespace maroof::net
         // they never get retransmit-tracked themselves).
         PacketHeader make_ack(std::uint64_t received_sequence);
 
+        // Ingests a reliable Data packet with dedup and in-order delivery.
+        // Invokes deliver(span) for each in-order payload (this one plus any
+        // now-consecutive stashed ones). No-op on duplicate, out-of-order stash,
+        // beyond-window, or oversized payload. Caller Acks unconditionally.
+        // Spans passed to deliver are valid only for the duration of that call.
+        template <typename F>
+        void receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, F&& deliver)
+        {
+
+            if (!m_next_expected_reliable_seq.has_value())
+            {
+                m_next_expected_reliable_seq = sequence;
+            }
+
+            const std::uint64_t next = *m_next_expected_reliable_seq;
+
+            // Below window (already delivered) or beyond window (too far ahead).
+            if (sequence < next || sequence >= next + RELIABLE_WINDOW_SIZE)
+            {
+                return;
+            }
+
+            // Payload wouldn't fit a slot.
+            if (payload.size() > MAX_RELIABLE_PAYLOAD)
+            {
+                return;
+            }
+
+            const std::size_t slot_idx = (m_window_base + (sequence - next)) % RELIABLE_WINDOW_SIZE;
+
+            // Duplicate: bit already set.
+            if (m_reliable_received.test(slot_idx))
+            {
+                return;
+            }
+
+            // Stash into the slot.
+            auto& slot = m_reliable_slots[slot_idx];
+            slot.length = static_cast<std::uint16_t>(payload.size());
+            std::memcpy(slot.bytes.data(), payload.data(), payload.size());
+            m_reliable_received.set(slot_idx);
+
+            // If not at the front of the window, we're done - just stashed.
+            if (sequence != next)
+            {
+                return;
+            }
+
+            // At the front. Drain consecutive slots and slide the window.
+            while (m_reliable_received.test(m_window_base))
+            {
+                auto& front = m_reliable_slots[m_window_base];
+                deliver(std::span<const std::byte>(front.bytes.data(), front.length));
+                m_reliable_received.reset(m_window_base);
+                m_next_expected_reliable_seq = *m_next_expected_reliable_seq + 1;
+                m_window_base = (m_window_base + 1) % RELIABLE_WINDOW_SIZE;
+            }
+
+        }
+
     private:
 
         // Retransmit tuning. Initial timeout doubles per retry, capped at max.
@@ -108,11 +172,28 @@ namespace maroof::net
         static constexpr std::chrono::milliseconds INITIAL_TIMEOUT { 100 };
         static constexpr std::chrono::milliseconds MAX_TIMEOUT { 1600 };
 
+        // Receive-side reliable sliding window. Bounded fixed-size storage so
+        // there are no per-packet heap allocations on the receive hot path.
+        static constexpr std::size_t RELIABLE_WINDOW_SIZE = 128;
+        static constexpr std::size_t MAX_RELIABLE_PAYLOAD = 1500;  // one UDP MTU
+
+        struct ReorderSlot
+        {
+            std::uint16_t length { 0 };
+            std::array<std::byte, MAX_RELIABLE_PAYLOAD> bytes {};
+        };
+
         Endpoint m_peer;
         State m_state { State::Disconnected };
         std::uint64_t m_next_send_seq { 0 };
         std::uint64_t m_highest_received_seq { 0 };
         std::unordered_map<std::uint64_t, PendingPacket> m_sent_reliable {}; // in flight reliable packets awaiting ACK; seq number -> pendingpacket struct
+
+        // Sliding window state for reliable receive.
+        std::optional<std::uint64_t> m_next_expected_reliable_seq {};
+        std::size_t m_window_base { 0 };
+        std::bitset<RELIABLE_WINDOW_SIZE> m_reliable_received {};
+        std::array<ReorderSlot, RELIABLE_WINDOW_SIZE> m_reliable_slots {};
 
         // will need this if and probably when i add batching multiple commands
         // std::deque<PendingPacket> m_outgoing_reliable {};                    // queued but not yet in flight reliable packets
