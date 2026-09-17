@@ -109,60 +109,8 @@ namespace maroof::net
         // now-consecutive stashed ones). No-op on duplicate, out-of-order stash,
         // beyond-window, or oversized payload. Caller Acks unconditionally.
         // Spans passed to deliver are valid only for the duration of that call.
-        template <typename F>
-        void receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, F&& deliver)
-        {
-
-            if (!m_next_expected_reliable_seq.has_value())
-            {
-                m_next_expected_reliable_seq = sequence;
-            }
-
-            const std::uint64_t next = *m_next_expected_reliable_seq;
-
-            // Below window (already delivered) or beyond window (too far ahead).
-            if (sequence < next || sequence >= next + RELIABLE_WINDOW_SIZE)
-            {
-                return;
-            }
-
-            // Payload wouldn't fit a slot.
-            if (payload.size() > MAX_RELIABLE_PAYLOAD)
-            {
-                return;
-            }
-
-            const std::size_t slot_idx = (m_window_base + (sequence - next)) % RELIABLE_WINDOW_SIZE;
-
-            // Duplicate: bit already set.
-            if (m_reliable_received.test(slot_idx))
-            {
-                return;
-            }
-
-            // Stash into the slot.
-            auto& slot = m_reliable_slots[slot_idx];
-            slot.length = static_cast<std::uint16_t>(payload.size());
-            std::memcpy(slot.bytes.data(), payload.data(), payload.size());
-            m_reliable_received.set(slot_idx);
-
-            // If not at the front of the window, we're done - just stashed.
-            if (sequence != next)
-            {
-                return;
-            }
-
-            // At the front. Drain consecutive slots and slide the window.
-            while (m_reliable_received.test(m_window_base))
-            {
-                auto& front = m_reliable_slots[m_window_base];
-                deliver(std::span<const std::byte>(front.bytes.data(), front.length));
-                m_reliable_received.reset(m_window_base);
-                m_next_expected_reliable_seq = *m_next_expected_reliable_seq + 1;
-                m_window_base = (m_window_base + 1) % RELIABLE_WINDOW_SIZE;
-            }
-
-        }
+        template <typename OnProcessPayload>
+        void receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver);
 
     private:
 
@@ -199,6 +147,61 @@ namespace maroof::net
         // std::deque<PendingPacket> m_outgoing_reliable {};                    // queued but not yet in flight reliable packets
 
     };
+
+    template <typename OnProcessPayload>
+    void Connection::receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
+    {
+
+        if (!m_next_expected_reliable_seq.has_value())
+        {
+            m_next_expected_reliable_seq = sequence;
+        }
+
+        const std::uint64_t next = *m_next_expected_reliable_seq;
+
+        // Below window (already delivered) or beyond window (too far ahead).
+        if (sequence < next || sequence >= next + RELIABLE_WINDOW_SIZE)
+        {
+            return;
+        }
+
+        // Payload wouldn't fit a slot.
+        if (payload.size() > MAX_RELIABLE_PAYLOAD)
+        {
+            return;
+        }
+
+        const std::size_t slot_idx = (m_window_base + (sequence - next)) % RELIABLE_WINDOW_SIZE;
+
+        // Duplicate: bit already set.
+        if (m_reliable_received.test(slot_idx))
+        {
+            return;
+        }
+
+        // Stash into the slot.
+        auto& slot = m_reliable_slots[slot_idx];
+        slot.length = static_cast<std::uint16_t>(payload.size());
+        std::memcpy(slot.bytes.data(), payload.data(), payload.size());
+        m_reliable_received.set(slot_idx);
+
+        // If not at the front of the window, we're done - just stashed.
+        if (sequence != next)
+        {
+            return;
+        }
+
+        // At the front. Drain consecutive slots and slide the window.
+        while (m_reliable_received.test(m_window_base))
+        {
+            auto& front = m_reliable_slots[m_window_base];
+            deliver(std::span<const std::byte>(front.bytes.data(), front.length));
+            m_reliable_received.reset(m_window_base);
+            m_next_expected_reliable_seq = *m_next_expected_reliable_seq + 1;
+            m_window_base = (m_window_base + 1) % RELIABLE_WINDOW_SIZE;
+        }
+
+    }
 
 } // namespace maroof::net
 
