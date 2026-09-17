@@ -55,8 +55,11 @@ namespace maroof::net
         // HelloAck header to send back. Idempotent: calling this on an already
         // Established connection just produces another HelloAck, which is the
         // right behavior when a duplicate Hello arrives (our previous HelloAck
-        // was probably dropped).
-        PacketHeader accept_hello();
+        // was probably dropped). Also seeds the reliable receive window's
+        // expected sequence from hello_sequence + 1, but only the first time -
+        // a duplicate Hello arriving after we're already Established must not
+        // reseed and undo delivery progress.
+        PacketHeader accept_hello(std::uint64_t hello_sequence);
 
         // Client-side. Transitions Connecting to Established. No-op if we're
         // already Established. Ignored if we're Disconnected (stray packet).
@@ -107,10 +110,15 @@ namespace maroof::net
         // Ingests a reliable Data packet with dedup and in-order delivery.
         // Invokes deliver(span) for each in-order payload (this one plus any
         // now-consecutive stashed ones). No-op on duplicate, out-of-order stash,
-        // beyond-window, or oversized payload. Caller Acks unconditionally.
-        // Spans passed to deliver are valid only for the duration of that call.
+        // beyond-window, or oversized payload. Spans passed to deliver are
+        // valid only for the duration of that call. Returns true if sequence
+        // was accounted for (delivered, stashed, or a duplicate of either) -
+        // the caller should Ack only in that case. Returns false for
+        // beyond-window or oversized payloads, which were dropped without
+        // being tracked; the caller must NOT Ack those, so the sender keeps
+        // retransmitting until the window can actually take the packet.
         template <typename OnProcessPayload>
-        void receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver);
+        bool receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver);
 
     private:
 
@@ -149,7 +157,7 @@ namespace maroof::net
     };
 
     template <typename OnProcessPayload>
-    void Connection::receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
+    bool Connection::receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
     {
 
         if (!m_next_expected_reliable_seq.has_value())
@@ -159,24 +167,32 @@ namespace maroof::net
 
         const std::uint64_t next = *m_next_expected_reliable_seq;
 
-        // Below window (already delivered) or beyond window (too far ahead).
-        if (sequence < next || sequence >= next + RELIABLE_WINDOW_SIZE)
+        // Below window: already delivered. Still Ack it - the sender is only
+        // retransmitting because our earlier Ack was lost.
+        if (sequence < next)
         {
-            return;
+            return true;
         }
 
-        // Payload wouldn't fit a slot.
+        // Beyond window: no slot to hold it. Do NOT Ack - the sender must
+        // keep retrying until the window has slid far enough to accept it.
+        if (sequence >= next + RELIABLE_WINDOW_SIZE)
+        {
+            return false;
+        }
+
+        // Payload wouldn't fit a slot. Same as beyond-window: can't track it.
         if (payload.size() > MAX_RELIABLE_PAYLOAD)
         {
-            return;
+            return false;
         }
 
         const std::size_t slot_idx = (m_window_base + (sequence - next)) % RELIABLE_WINDOW_SIZE;
 
-        // Duplicate: bit already set.
+        // Duplicate: bit already set. Already accounted for, Ack again.
         if (m_reliable_received.test(slot_idx))
         {
-            return;
+            return true;
         }
 
         // Stash into the slot.
@@ -188,7 +204,7 @@ namespace maroof::net
         // If not at the front of the window, we're done - just stashed.
         if (sequence != next)
         {
-            return;
+            return true;
         }
 
         // At the front. Drain consecutive slots and slide the window.
@@ -200,6 +216,8 @@ namespace maroof::net
             m_next_expected_reliable_seq = *m_next_expected_reliable_seq + 1;
             m_window_base = (m_window_base + 1) % RELIABLE_WINDOW_SIZE;
         }
+
+        return true;
 
     }
 

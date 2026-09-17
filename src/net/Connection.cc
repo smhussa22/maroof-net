@@ -14,8 +14,18 @@ namespace maroof::net
 
     }
 
-    PacketHeader Connection::accept_hello()
+    PacketHeader Connection::accept_hello(std::uint64_t hello_sequence)
     {
+
+        // Seed the reliable receive window from the Hello, not from whichever
+        // Data packet happens to arrive first - only on the first Hello we
+        // see, so a duplicate Hello after Established can't undo progress.
+        if (!m_next_expected_reliable_seq.has_value())
+        {
+
+            m_next_expected_reliable_seq = hello_sequence + 1;
+
+        }
 
         m_state = State::Established;
         PacketHeader header { m_next_send_seq++, PacketType::HelloAck, 0, 0 };
