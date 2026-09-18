@@ -34,9 +34,11 @@ private:
 };
 
 template <typename OnProcessPayload>
-void UnreliableUnorderedChannel::receive(std::uint64_t /*sequence*/, std::span<const std::byte> payload, OnProcessPayload&& deliver)
+void UnreliableUnorderedChannel::receive(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
 {
-    // TODO: call deliver(payload) — no checks, no state update
+    
+    deliver(payload);
+
 }
 
 } // namespace maroof::net

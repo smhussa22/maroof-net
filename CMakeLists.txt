@@ -55,3 +55,7 @@ gtest_discover_tests(packet_header_test)
 add_executable(connection_test tests/connection_test.cc)
 target_link_libraries(connection_test PRIVATE maroof_net GTest::gtest_main)
 gtest_discover_tests(connection_test)
+
+add_executable(unreliable_channels_test tests/unreliable_channels_test.cc)
+target_link_libraries(unreliable_channels_test PRIVATE maroof_net GTest::gtest_main)
+gtest_discover_tests(unreliable_channels_test)

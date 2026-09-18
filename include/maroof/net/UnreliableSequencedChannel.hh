@@ -36,11 +36,24 @@ private:
 
 };
 
+
+// Latest-wins delivery. Deliver only if sequence is strictly newer than m_highest_received_seq.
+    // Drop silently if stale — an old update arriving late is worse than missing.
 template <typename OnProcessPayload>
 void UnreliableSequencedChannel::receive(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
 {
-    // TODO: if m_highest_received_seq has value and sequence <= *m_highest_received_seq, return (stale).
-    // TODO: update m_highest_received_seq = sequence, then call deliver(payload).
+
+    // if this packet is not newer than the last one we delviered
+    if (m_highest_received_seq.has_value() && sequence <= *m_highest_received_seq)
+    {
+
+        return;
+
+    }
+
+    m_highest_received_seq = sequence;
+    deliver(payload);
+
 }
 
 } // namespace maroof::net
