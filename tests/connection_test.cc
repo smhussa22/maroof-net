@@ -137,12 +137,11 @@ TEST(ConnectionReliability, ExhaustingRetriesDisconnectsPeer)
     c.accept_hello();
     c.make_reliable_data(as_bytes("hi"), 0);
 
-    // Fire tick far in the future MAX_RETRIES + 1 times.
-    // Each call bumps retry_count until the next call sees it >= MAX_RETRIES
-    // and transitions to Disconnected.
+    // Each tick must be past the updated retransmit deadline (exponential backoff).
+    // Using hours(i+1) ensures every tick fires regardless of backoff magnitude.
     for (int i = 0; i < 20; ++i)
     {
-        c.tick(std::chrono::steady_clock::now() + std::chrono::hours(1) + std::chrono::milliseconds(i));
+        c.tick(std::chrono::steady_clock::now() + std::chrono::hours(i + 1));
         if (c.state() == Connection::State::Disconnected) break;
     }
 

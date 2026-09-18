@@ -11,6 +11,7 @@ add_library(maroof_net STATIC
     src/net/Endpoint.cc
     src/net/Crc32.cc
     src/net/PacketHeader.cc
+    src/net/ReliableOrderedChannel.cc
     src/net/Connection.cc
 )
 target_include_directories(maroof_net PUBLIC include/)
