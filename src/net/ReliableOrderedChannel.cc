@@ -3,6 +3,14 @@
 namespace maroof::net
 {
 
+    void ReliableOrderedChannel::seed_receive(std::uint64_t first_seq)
+    {
+        if (!m_next_expected_seq.has_value())
+        {
+            m_next_expected_seq = first_seq;
+        }
+    }
+
     std::span<const std::byte> ReliableOrderedChannel::send(std::span<const std::byte> payload)
     {
 

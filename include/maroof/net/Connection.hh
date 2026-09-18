@@ -35,7 +35,9 @@ namespace maroof::net
         PacketHeader make_hello();
 
         // Server: Disconnected -> Established (idempotent on duplicate Hello).
-        PacketHeader accept_hello();
+        // hello_sequence seeds the receive window so the server knows what Data seq to expect;
+        // ignored on a duplicate Hello to avoid rewinding already-delivered progress.
+        PacketHeader accept_hello(std::uint64_t hello_sequence);
 
         // Client: Connecting -> Established. No-op if already Established or Disconnected.
         void on_hello_ack();
@@ -54,7 +56,7 @@ namespace maroof::net
         PacketHeader make_ack(std::uint64_t received_sequence);
 
         template <typename OnProcessPayload>
-        void receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver);
+        bool receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver);
 
     private:
 
@@ -68,9 +70,9 @@ namespace maroof::net
     };
 
     template <typename OnProcessPayload>
-    void Connection::receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
+    bool Connection::receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
     {
-        m_channel_0.receive(sequence, payload, std::forward<OnProcessPayload>(deliver));
+        return m_channel_0.receive(sequence, payload, std::forward<OnProcessPayload>(deliver));
     }
 
 } // namespace maroof::net

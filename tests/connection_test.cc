@@ -45,7 +45,7 @@ TEST(ConnectionHandshake, MakeHelloTransitionsToConnecting)
 TEST(ConnectionHandshake, AcceptHelloTransitionsToEstablished)
 {
     Connection c { make_peer() };
-    c.accept_hello();
+    c.accept_hello(0);
     EXPECT_EQ(c.state(), Connection::State::Established);
 }
 
@@ -67,7 +67,7 @@ TEST(ConnectionHandshake, OnHelloAckIsNoOpFromDisconnected)
 TEST(ConnectionReliability, MakeReliableDataReturnsBytesWithHeaderAndPayload)
 {
     Connection c { make_peer() };
-    c.accept_hello();
+    c.accept_hello(0);
 
     auto payload = as_bytes("hello");
     auto bytes = c.make_reliable_data(payload, 0);
@@ -85,7 +85,7 @@ TEST(ConnectionReliability, MakeReliableDataReturnsBytesWithHeaderAndPayload)
 TEST(ConnectionReliability, TickBeforeTimeoutReturnsEmpty)
 {
     Connection c { make_peer() };
-    c.accept_hello();
+    c.accept_hello(0);
     c.make_reliable_data(as_bytes("hi"), 0);
 
     // Timer hasn't fired yet.
@@ -96,7 +96,7 @@ TEST(ConnectionReliability, TickBeforeTimeoutReturnsEmpty)
 TEST(ConnectionReliability, TickAfterTimeoutReturnsRetransmit)
 {
     Connection c { make_peer() };
-    c.accept_hello();
+    c.accept_hello(0);
     c.make_reliable_data(as_bytes("hi"), 0);
 
     // Advance well past INITIAL_TIMEOUT.
@@ -108,7 +108,7 @@ TEST(ConnectionReliability, TickAfterTimeoutReturnsRetransmit)
 TEST(ConnectionReliability, HandleAckStopsRetransmits)
 {
     Connection c { make_peer() };
-    c.accept_hello();
+    c.accept_hello(0);
     c.make_reliable_data(as_bytes("hi"), 0);
 
     // Parse the produced bytes to find the sequence number the peer would ACK.
@@ -126,7 +126,7 @@ TEST(ConnectionReliability, HandleAckStopsRetransmits)
 TEST(ConnectionReliability, HandleAckForUnknownSequenceIsNoOp)
 {
     Connection c { make_peer() };
-    c.accept_hello();
+    c.accept_hello(0);
     // No pending packets.
     EXPECT_NO_THROW(c.handle_ack(999));
 }
@@ -134,7 +134,7 @@ TEST(ConnectionReliability, HandleAckForUnknownSequenceIsNoOp)
 TEST(ConnectionReliability, ExhaustingRetriesDisconnectsPeer)
 {
     Connection c { make_peer() };
-    c.accept_hello();
+    c.accept_hello(0);
     c.make_reliable_data(as_bytes("hi"), 0);
 
     // Each tick must be past the updated retransmit deadline (exponential backoff).
@@ -159,7 +159,7 @@ TEST(ConnectionReliability, MakeAckCarriesReceivedSequence)
 TEST(ConnectionReliability, MakeAckDoesNotConsumeSequenceCounter)
 {
     Connection c { make_peer() };
-    c.accept_hello();
+    c.accept_hello(0);
 
     // Sending an Ack shouldn't burn a sequence number - the next Data should
     // start where make_hello / accept_hello left off, not skip past it.

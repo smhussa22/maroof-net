@@ -73,7 +73,7 @@ int main(int argc, char* argv[])
                 it = connections.emplace(peer, Connection(peer)).first;
             }
 
-            auto ack = it->second.accept_hello();
+            auto ack = it->second.accept_hello(header.sequence);
             if (auto n { serialize(ack, {}, std::span<std::byte>(send_buf)) }; n.has_value())
             {
                 socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
@@ -94,15 +94,10 @@ int main(int argc, char* argv[])
         if (header.type == PacketType::Data)
         {
 
-            // Ack unconditionally so peer stops retrying, even on duplicates.
-            auto ack = it->second.make_ack(header.sequence);
-            if (auto n { serialize(ack, {}, std::span<std::byte>(send_buf)) }; n.has_value())
-            {
-                socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
-            }
-
             // Dedup + reorder. Lambda fires once per in-order delivered payload.
-            it->second.receive_reliable_data(header.sequence, payload,
+            // Only ACK if the packet was accounted for — beyond-window packets must NOT be ACKed,
+            // or the sender removes them from pending and they become a permanent hole.
+            bool accepted = it->second.receive_reliable_data(header.sequence, payload,
                 [&](std::span<const std::byte> p)
                 {
                     auto reply = it->second.make_data_header(header.channel_id);
@@ -112,6 +107,15 @@ int main(int argc, char* argv[])
                         std::println("[echo] {} bytes seq {} from {}", p.size(), header.sequence, peer.to_string());
                     }
                 });
+
+            if (accepted)
+            {
+                auto ack = it->second.make_ack(header.sequence);
+                if (auto n { serialize(ack, {}, std::span<std::byte>(send_buf)) }; n.has_value())
+                {
+                    socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
+                }
+            }
 
         }
 

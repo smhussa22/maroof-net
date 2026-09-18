@@ -41,10 +41,15 @@ public:
     // Build an Ack header carrying received_sequence. Does not consume a send sequence number.
     PacketHeader make_ack(std::uint64_t received_sequence);
 
+    // Seed the receive window to first_seq. No-op if already seeded (duplicate Hello must not reset progress).
+    void seed_receive(std::uint64_t first_seq);
+
     // Dedup + reorder via sliding window. Invokes deliver(span) for each in-order payload.
-    // Caller ACKs unconditionally; spans passed to deliver are valid only for that call's duration.
+    // Returns true if the packet was accounted for (delivered, stashed, or a known duplicate) — caller should ACK.
+    // Returns false for beyond-window or oversized; caller must NOT ACK so the sender keeps retransmitting.
+    // Spans passed to deliver are valid only for that call's duration.
     template <typename OnProcessPayload>
-    void receive(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver);
+    bool receive(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver);
 
 private:
 
@@ -80,7 +85,7 @@ private:
 };
 
 template <typename OnProcessPayload>
-void ReliableOrderedChannel::receive(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
+bool ReliableOrderedChannel::receive(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
 {
 
     if (!m_next_expected_seq.has_value())
@@ -90,24 +95,31 @@ void ReliableOrderedChannel::receive(std::uint64_t sequence, std::span<const std
 
     const std::uint64_t next = *m_next_expected_seq;
 
-    // Below window (already delivered) or beyond window (too far ahead).
-    if (sequence < next || sequence >= next + WINDOW_SIZE)
+    // Below window: already delivered. ACK again — our earlier ACK was probably lost.
+    if (sequence < next)
     {
-        return;
+        return true;
     }
 
-    // Payload wouldn't fit a slot.
+    // Beyond window: no slot available. Do NOT ACK — sender must keep retrying until
+    // the window slides far enough to accept it. ACKing here would drop the packet forever.
+    if (sequence >= next + WINDOW_SIZE)
+    {
+        return false;
+    }
+
+    // Payload wouldn't fit a slot — same as beyond-window: can't track it.
     if (payload.size() > MAX_PAYLOAD)
     {
-        return;
+        return false;
     }
 
     const std::size_t slot_idx = (m_window_base + (sequence - next)) % WINDOW_SIZE;
 
-    // Duplicate: bit already set.
+    // Duplicate: bit already set. Already accounted for, ACK again.
     if (m_received.test(slot_idx))
     {
-        return;
+        return true;
     }
 
     // Stash into the slot.
@@ -119,7 +131,7 @@ void ReliableOrderedChannel::receive(std::uint64_t sequence, std::span<const std
     // If not at the front of the window, we're done — just stashed.
     if (sequence != next)
     {
-        return;
+        return true;
     }
 
     // At the front. Drain consecutive slots and slide the window.
@@ -131,6 +143,8 @@ void ReliableOrderedChannel::receive(std::uint64_t sequence, std::span<const std
         m_next_expected_seq = *m_next_expected_seq + 1;
         m_window_base = (m_window_base + 1) % WINDOW_SIZE;
     }
+
+    return true;
 
 }
 
