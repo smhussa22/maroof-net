@@ -37,8 +37,8 @@ private:
 };
 
 
-// Latest-wins delivery. Deliver only if sequence is strictly newer than m_highest_received_seq.
-    // Drop silently if stale — an old update arriving late is worse than missing.
+// latest-wins delivery. deliver only if sequence is strictly newer than m_highest_received_seq.
+// Drop silently if stale — an old update arriving late is worse than missing.
 template <typename OnProcessPayload>
 void UnreliableSequencedChannel::receive(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
 {

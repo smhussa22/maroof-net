@@ -59,3 +59,7 @@ gtest_discover_tests(connection_test)
 add_executable(unreliable_channels_test tests/unreliable_channels_test.cc)
 target_link_libraries(unreliable_channels_test PRIVATE maroof_net GTest::gtest_main)
 gtest_discover_tests(unreliable_channels_test)
+
+add_executable(reliable_ordered_channel_test tests/reliable_ordered_channel_test.cc)
+target_link_libraries(reliable_ordered_channel_test PRIVATE maroof_net GTest::gtest_main)
+gtest_discover_tests(reliable_ordered_channel_test)

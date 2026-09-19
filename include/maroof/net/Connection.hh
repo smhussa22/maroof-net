@@ -4,6 +4,8 @@
 #include <maroof/net/Endpoint.hh>
 #include <maroof/net/PacketHeader.hh>
 #include <maroof/net/ReliableOrderedChannel.hh>
+#include <maroof/net/UnreliableUnorderedChannel.hh>
+#include <maroof/net/UnreliableSequencedChannel.hh>
 
 #include <chrono>
 #include <cstdint>
@@ -42,21 +44,27 @@ namespace maroof::net
         // Client: Connecting -> Established. No-op if already Established or Disconnected.
         void on_hello_ack();
 
-        // Unreliable send stub. Moves to UnreliableUnorderedChannel in Phase 2.
-        PacketHeader make_data_header(std::uint8_t channel_id);
-
         void note_received(std::uint64_t sequence);
 
-        std::span<const std::byte> make_reliable_data(std::span<const std::byte> payload, std::uint8_t channel_id);
-
+        // Advance reliable channel retransmit timers. Transitions to Disconnected if the channel dies.
         std::vector<std::span<const std::byte>> tick(std::chrono::steady_clock::time_point now);
 
         void handle_ack(std::uint64_t sequence);
-
         PacketHeader make_ack(std::uint64_t received_sequence);
 
-        template <typename OnProcessPayload>
-        bool receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver);
+        // Per-channel send. Takes a readable byte payload, returns a span of the fully serialized
+        // wire bytes (header + payload) into channel-owned storage. Hand it to socket.send_to
+        // immediately — the span is invalidated by the next call to send on the same channel.
+        std::span<const std::byte> send_reliable  (std::span<const std::byte> payload);  // channel 0
+        std::span<const std::byte> send_unreliable(std::span<const std::byte> payload);  // channel 1
+        std::span<const std::byte> send_sequenced (std::span<const std::byte> payload);  // channel 2
+
+        // Dispatch incoming Data to the channel indicated by header.channel_id.
+        // Returns true if the caller should ACK (only ever true for the reliable channel);
+        // returns false for unreliable/sequenced (never ACK), unknown channel_id (dropped), or
+        // reliable beyond-window / oversized (sender must keep retrying).
+        template<typename OnProcessPayload>
+        bool receive_data(const PacketHeader& header, std::span<const std::byte> payload, OnProcessPayload&& deliver);
 
     private:
 
@@ -66,13 +74,34 @@ namespace maroof::net
         std::uint64_t m_highest_received_seq { 0 };
 
         ReliableOrderedChannel m_channel_0 {};
+        UnreliableUnorderedChannel m_channel_1 {};
+        UnreliableSequencedChannel m_channel_2 {};
 
     };
 
-    template <typename OnProcessPayload>
-    bool Connection::receive_reliable_data(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
+    template<typename OnProcessPayload>
+    bool Connection::receive_data(const PacketHeader& header, std::span<const std::byte> payload, OnProcessPayload&& deliver)
     {
-        return m_channel_0.receive(sequence, payload, std::forward<OnProcessPayload>(deliver));
+
+        switch (header.channel_id)
+        {
+
+            case ReliableOrderedChannel::CHANNEL_ID:
+                return m_channel_0.receive(header.sequence, payload, std::forward<OnProcessPayload>(deliver));
+
+            case UnreliableUnorderedChannel::CHANNEL_ID:
+                m_channel_1.receive(header.sequence, payload, std::forward<OnProcessPayload>(deliver));
+                return false;
+
+            case UnreliableSequencedChannel::CHANNEL_ID:
+                m_channel_2.receive(header.sequence, payload, std::forward<OnProcessPayload>(deliver));
+                return false;
+
+            default:
+                return false;
+
+        }
+
     }
 
 } // namespace maroof::net

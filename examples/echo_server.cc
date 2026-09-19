@@ -94,21 +94,21 @@ int main(int argc, char* argv[])
         if (header.type == PacketType::Data)
         {
 
-            // Dedup + reorder. Lambda fires once per in-order delivered payload.
-            // Only ACK if the packet was accounted for — beyond-window packets must NOT be ACKed,
-            // or the sender removes them from pending and they become a permanent hole.
-            bool accepted = it->second.receive_reliable_data(header.sequence, payload,
+            // Dispatch to the correct channel by header.channel_id.
+            // Lambda fires once per in-order delivered payload; echo replies go out as unreliable
+            // (fire-and-forget) since the server doesn't track its own sends in this demo.
+            bool should_ack = it->second.receive_data(header, payload,
                 [&](std::span<const std::byte> p)
                 {
-                    auto reply = it->second.make_data_header(header.channel_id);
-                    if (auto n { serialize(reply, p, std::span<std::byte>(send_buf)) }; n.has_value())
-                    {
-                        socket.send_to(std::span<const std::byte>(send_buf.data(), n.value()), peer).value();
-                        std::println("[echo] {} bytes seq {} from {}", p.size(), header.sequence, peer.to_string());
-                    }
+                    auto reply_bytes = it->second.send_unreliable(p);
+                    socket.send_to(reply_bytes, peer).value();
+                    std::println("[echo] {} bytes seq {} channel {} from {}",
+                                 p.size(), header.sequence, header.channel_id, peer.to_string());
                 });
 
-            if (accepted)
+            // Only reliable-channel packets get ACKed. Beyond-window / oversized reliable packets
+            // return false so the sender keeps retransmitting instead of getting a lost-forever hole.
+            if (should_ack)
             {
                 auto ack = it->second.make_ack(header.sequence);
                 if (auto n { serialize(ack, {}, std::span<std::byte>(send_buf)) }; n.has_value())

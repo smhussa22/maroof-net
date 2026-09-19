@@ -39,14 +39,6 @@ namespace maroof::net
 
     }
 
-    PacketHeader Connection::make_data_header(std::uint8_t channel_id)
-    {
-
-        PacketHeader header { m_next_send_seq++, PacketType::Data, channel_id, 0 };
-        return header;
-
-    }
-
     void Connection::note_received(std::uint64_t sequence)
     {
 
@@ -55,11 +47,6 @@ namespace maroof::net
             m_highest_received_seq = sequence;
         }
 
-    }
-
-    std::span<const std::byte> Connection::make_reliable_data(std::span<const std::byte> payload, std::uint8_t /*channel_id*/)
-    {
-        return m_channel_0.send(payload);
     }
 
     std::vector<std::span<const std::byte>> Connection::tick(std::chrono::steady_clock::time_point now)
@@ -82,6 +69,21 @@ namespace maroof::net
     PacketHeader Connection::make_ack(std::uint64_t received_sequence)
     {
         return m_channel_0.make_ack(received_sequence);
+    }
+
+    std::span<const std::byte> Connection::send_reliable(std::span<const std::byte> payload)
+    {
+        return m_channel_0.send(payload);
+    }
+
+    std::span<const std::byte> Connection::send_unreliable(std::span<const std::byte> payload)
+    {
+        return m_channel_1.send(payload);
+    }
+
+    std::span<const std::byte> Connection::send_sequenced(std::span<const std::byte> payload)
+    {
+        return m_channel_2.send(payload);
     }
 
 } // namespace maroof::net

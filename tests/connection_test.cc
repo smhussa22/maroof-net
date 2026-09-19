@@ -4,6 +4,9 @@
 #include <maroof/net/Endpoint.hh>
 #include <maroof/net/PacketHeader.hh>
 #include <maroof/net/PacketType.hh>
+#include <maroof/net/ReliableOrderedChannel.hh>
+#include <maroof/net/UnreliableSequencedChannel.hh>
+#include <maroof/net/UnreliableUnorderedChannel.hh>
 
 #include <chrono>
 #include <cstddef>
@@ -20,17 +23,6 @@ namespace
     std::span<const std::byte> as_bytes(const char* s)
     {
         return { reinterpret_cast<const std::byte*>(s), std::strlen(s) };
-    }
-
-    // Runs receive_reliable_data and captures each delivered payload as an
-    // owned copy so the test can assert on it after the call returns.
-    std::vector<std::vector<std::byte>> collect(Connection& c, std::uint64_t seq, std::span<const std::byte> payload)
-    {
-        std::vector<std::vector<std::byte>> out;
-        c.receive_reliable_data(seq, payload, [&](std::span<const std::byte> p) {
-            out.emplace_back(p.begin(), p.end());
-        });
-        return out;
     }
 }
 
@@ -64,20 +56,20 @@ TEST(ConnectionHandshake, OnHelloAckIsNoOpFromDisconnected)
     EXPECT_EQ(c.state(), Connection::State::Disconnected);
 }
 
-TEST(ConnectionReliability, MakeReliableDataReturnsBytesWithHeaderAndPayload)
+TEST(ConnectionReliability, SendReliableReturnsBytesWithHeaderAndPayload)
 {
     Connection c { make_peer() };
     c.accept_hello(0);
 
     auto payload = as_bytes("hello");
-    auto bytes = c.make_reliable_data(payload, 0);
+    auto bytes = c.send_reliable(payload);
 
     EXPECT_EQ(bytes.size(), PACKET_HEADER_WIRE_SIZE + payload.size());
 
-    // Verify the produced bytes parse back to a Data packet with matching payload.
     auto parsed = parse(bytes);
     ASSERT_TRUE(parsed.has_value());
     EXPECT_EQ(parsed->first.type, PacketType::Data);
+    EXPECT_EQ(parsed->first.channel_id, 0);
     EXPECT_EQ(parsed->second.size(), payload.size());
     EXPECT_EQ(std::memcmp(parsed->second.data(), payload.data(), payload.size()), 0);
 }
@@ -86,7 +78,7 @@ TEST(ConnectionReliability, TickBeforeTimeoutReturnsEmpty)
 {
     Connection c { make_peer() };
     c.accept_hello(0);
-    c.make_reliable_data(as_bytes("hi"), 0);
+    c.send_reliable(as_bytes("hi"));
 
     // Timer hasn't fired yet.
     auto retransmits = c.tick(std::chrono::steady_clock::now());
@@ -97,7 +89,7 @@ TEST(ConnectionReliability, TickAfterTimeoutReturnsRetransmit)
 {
     Connection c { make_peer() };
     c.accept_hello(0);
-    c.make_reliable_data(as_bytes("hi"), 0);
+    c.send_reliable(as_bytes("hi"));
 
     // Advance well past INITIAL_TIMEOUT.
     auto future = std::chrono::steady_clock::now() + 1s;
@@ -109,10 +101,10 @@ TEST(ConnectionReliability, HandleAckStopsRetransmits)
 {
     Connection c { make_peer() };
     c.accept_hello(0);
-    c.make_reliable_data(as_bytes("hi"), 0);
+    c.send_reliable(as_bytes("hi"));
 
     // Parse the produced bytes to find the sequence number the peer would ACK.
-    auto bytes = c.make_reliable_data(as_bytes("second"), 0);
+    auto bytes = c.send_reliable(as_bytes("second"));
     auto parsed = parse(bytes).value();
     auto seq_of_second = parsed.first.sequence;
 
@@ -135,7 +127,7 @@ TEST(ConnectionReliability, ExhaustingRetriesDisconnectsPeer)
 {
     Connection c { make_peer() };
     c.accept_hello(0);
-    c.make_reliable_data(as_bytes("hi"), 0);
+    c.send_reliable(as_bytes("hi"));
 
     // Each tick must be past the updated retransmit deadline (exponential backoff).
     // Using hours(i+1) ensures every tick fires regardless of backoff magnitude.
@@ -162,110 +154,71 @@ TEST(ConnectionReliability, MakeAckDoesNotConsumeSequenceCounter)
     c.accept_hello(0);
 
     // Sending an Ack shouldn't burn a sequence number - the next Data should
-    // start where make_hello / accept_hello left off, not skip past it.
-    auto first_data  = c.make_reliable_data(as_bytes("a"), 0);
+    // start where the previous send left off, not skip past it.
+    auto first_data  = c.send_reliable(as_bytes("a"));
     auto first_seq   = parse(first_data).value().first.sequence;
 
     c.make_ack(999);
     c.make_ack(1000);
 
-    auto second_data = c.make_reliable_data(as_bytes("b"), 0);
+    auto second_data = c.send_reliable(as_bytes("b"));
     auto second_seq  = parse(second_data).value().first.sequence;
 
     EXPECT_EQ(second_seq, first_seq + 1);
 }
 
-TEST(ConnectionReliableRx, FirstSeenSetsWatermarkAndDelivers)
+// Sliding-window receive tests moved to reliable_ordered_channel_test.cc — they belong to the
+// channel unit, not Connection. Connection-level dispatch is covered below via receive_data.
+
+TEST(ConnectionDispatch, ReceiveDataRoutesToReliableChannelAndSignalsAck)
 {
     Connection c { make_peer() };
-    auto out = collect(c, 5, as_bytes("hello"));
-    ASSERT_EQ(out.size(), 1u);
-    EXPECT_EQ(std::memcmp(out[0].data(), "hello", 5), 0);
+    c.accept_hello(0);
+
+    // Channel 0 packet at expected seq 1 (accept_hello(0) seeds to 1).
+    PacketHeader h { 1, PacketType::Data, ReliableOrderedChannel::CHANNEL_ID, 0 };
+    bool delivered = false;
+    bool should_ack = c.receive_data(h, as_bytes("hi"), [&](std::span<const std::byte>) { delivered = true; });
+
+    EXPECT_TRUE(delivered);
+    EXPECT_TRUE(should_ack);
 }
 
-TEST(ConnectionReliableRx, SequentialInOrderEachDelivers)
+TEST(ConnectionDispatch, ReceiveDataOnUnreliableChannelNeverAcks)
 {
     Connection c { make_peer() };
-    auto a = collect(c, 1, as_bytes("one"));
-    auto b = collect(c, 2, as_bytes("two"));
-    auto d = collect(c, 3, as_bytes("three"));
+    c.accept_hello(0);
 
-    ASSERT_EQ(a.size(), 1u);
-    ASSERT_EQ(b.size(), 1u);
-    ASSERT_EQ(d.size(), 1u);
-    EXPECT_EQ(std::memcmp(a[0].data(), "one",   3), 0);
-    EXPECT_EQ(std::memcmp(b[0].data(), "two",   3), 0);
-    EXPECT_EQ(std::memcmp(d[0].data(), "three", 5), 0);
+    PacketHeader h { 42, PacketType::Data, UnreliableUnorderedChannel::CHANNEL_ID, 0 };
+    bool delivered = false;
+    bool should_ack = c.receive_data(h, as_bytes("hi"), [&](std::span<const std::byte>) { delivered = true; });
+
+    EXPECT_TRUE(delivered);
+    EXPECT_FALSE(should_ack);
 }
 
-TEST(ConnectionReliableRx, DuplicateOfDeliveredReturnsEmpty)
+TEST(ConnectionDispatch, ReceiveDataOnSequencedChannelNeverAcks)
 {
     Connection c { make_peer() };
-    collect(c, 1, as_bytes("one"));
+    c.accept_hello(0);
 
-    auto dup = collect(c, 1, as_bytes("one"));
-    EXPECT_TRUE(dup.empty());
+    PacketHeader h { 1, PacketType::Data, UnreliableSequencedChannel::CHANNEL_ID, 0 };
+    bool delivered = false;
+    bool should_ack = c.receive_data(h, as_bytes("hi"), [&](std::span<const std::byte>) { delivered = true; });
+
+    EXPECT_TRUE(delivered);
+    EXPECT_FALSE(should_ack);
 }
 
-TEST(ConnectionReliableRx, OutOfOrderStashesReturningEmpty)
+TEST(ConnectionDispatch, ReceiveDataOnUnknownChannelDropsSilently)
 {
     Connection c { make_peer() };
-    collect(c, 1, as_bytes("one"));
+    c.accept_hello(0);
 
-    // seq 3 arrives before seq 2 - stashed, not delivered yet.
-    auto stashed = collect(c, 3, as_bytes("three"));
-    EXPECT_TRUE(stashed.empty());
-}
+    PacketHeader h { 1, PacketType::Data, 99, 0 };  // no such channel
+    bool delivered = false;
+    bool should_ack = c.receive_data(h, as_bytes("hi"), [&](std::span<const std::byte>) { delivered = true; });
 
-TEST(ConnectionReliableRx, GapFillDrainsInOrder)
-{
-    Connection c { make_peer() };
-    collect(c, 1, as_bytes("one"));
-
-    collect(c, 3, as_bytes("three"));  // stash
-    collect(c, 4, as_bytes("four"));   // stash
-
-    // seq 2 fills the gap - should deliver 2, then drain 3 and 4.
-    auto out = collect(c, 2, as_bytes("two"));
-    ASSERT_EQ(out.size(), 3u);
-    EXPECT_EQ(std::memcmp(out[0].data(), "two",   3), 0);
-    EXPECT_EQ(std::memcmp(out[1].data(), "three", 5), 0);
-    EXPECT_EQ(std::memcmp(out[2].data(), "four",  4), 0);
-}
-
-TEST(ConnectionReliableRx, DuplicateOfStashedReturnsEmpty)
-{
-    Connection c { make_peer() };
-    collect(c, 1, as_bytes("one"));
-
-    collect(c, 3, as_bytes("three"));            // stash
-    auto dup = collect(c, 3, as_bytes("three")); // duplicate of stashed
-    EXPECT_TRUE(dup.empty());
-}
-
-TEST(ConnectionReliableRx, PayloadIsCopiedNotAliased)
-{
-    Connection c { make_peer() };
-    collect(c, 1, as_bytes("one"));
-
-    std::vector<std::byte> buf(5);
-    std::memcpy(buf.data(), "three", 5);
-    collect(c, 3, std::span<const std::byte>(buf));
-
-    // Overwrite the caller's buffer to prove we didn't alias it.
-    std::memcpy(buf.data(), "XXXXX", 5);
-
-    auto out = collect(c, 2, as_bytes("two"));
-    ASSERT_EQ(out.size(), 2u);
-    EXPECT_EQ(std::memcmp(out[1].data(), "three", 5), 0);
-}
-
-TEST(ConnectionReliableRx, BeyondWindowDropped)
-{
-    Connection c { make_peer() };
-    collect(c, 0, as_bytes("first"));
-
-    // Way past the window front (window is 128 slots).
-    auto out = collect(c, 500, as_bytes("far"));
-    EXPECT_TRUE(out.empty());
+    EXPECT_FALSE(delivered);
+    EXPECT_FALSE(should_ack);
 }

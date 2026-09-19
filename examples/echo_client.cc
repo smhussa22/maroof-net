@@ -130,7 +130,7 @@ int main(int argc, char* argv[])
         message.size()
     };
 
-    auto reliable_bytes = conn.make_reliable_data(payload, 0);
+    auto reliable_bytes = conn.send_reliable(payload);
     if (!socket.send_to(reliable_bytes, server).has_value())
     {
         std::println("send Data failed");
