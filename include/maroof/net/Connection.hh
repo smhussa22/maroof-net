@@ -9,7 +9,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace maroof::net
@@ -46,11 +48,26 @@ namespace maroof::net
 
         void note_received(std::uint64_t sequence);
 
-        // Advance reliable channel retransmit timers. Transitions to Disconnected if the channel dies.
+        // Advance reliable channel retransmit timers. Transitions to Disconnected if the channel
+        // dies OR if no packet has arrived from the peer within HEARTBEAT_DEATH.
         std::vector<std::span<const std::byte>> tick(std::chrono::steady_clock::time_point now);
 
         void handle_ack(std::uint64_t sequence);
         PacketHeader make_ack(std::uint64_t received_sequence);
+
+        // Build a Ping and remember the send time so on_pong can compute RTT.
+        // Ping/Pong use their own sequence counter, independent of the channel counters.
+        PacketHeader make_ping(std::chrono::steady_clock::time_point now);
+
+        // Build the Pong reply for an incoming Ping — echoes the ping's sequence.
+        PacketHeader on_ping(const PacketHeader& ping) const noexcept;
+
+        // Match the pong to a remembered Ping and fold the RTT sample into the EWMA.
+        // No-op if the pong's sequence isn't in the pending-pings map (stale, duplicate, or spoofed).
+        void on_pong(const PacketHeader& pong, std::chrono::steady_clock::time_point now);
+
+        // Smoothed round-trip time. std::nullopt until the first Pong lands.
+        std::optional<std::chrono::nanoseconds> rtt() const noexcept { return m_smoothed_rtt; }
 
         // Per-channel send. Takes a readable byte payload, returns a span of the fully serialized
         // wire bytes (header + payload) into channel-owned storage. Hand it to socket.send_to
@@ -66,7 +83,14 @@ namespace maroof::net
         template<typename OnProcessPayload>
         bool receive_data(const PacketHeader& header, std::span<const std::byte> payload, OnProcessPayload&& deliver);
 
+        void note_activity(std::chrono::steady_clock::time_point now) { m_last_heard_from = now; }  
+        std::chrono::steady_clock::time_point last_heard_from() const noexcept { return m_last_heard_from; }
+
     private:
+
+        // Peer is considered dead if no packet arrives within this window. Any inbound packet
+        // (Data/Ack/Pong/…) resets the timer via note_activity.
+        static constexpr std::chrono::seconds HEARTBEAT_DEATH { 5 };
 
         Endpoint m_peer;
         State m_state { State::Disconnected };
@@ -76,6 +100,12 @@ namespace maroof::net
         ReliableOrderedChannel m_channel_0 {};
         UnreliableUnorderedChannel m_channel_1 {};
         UnreliableSequencedChannel m_channel_2 {};
+        std::chrono::steady_clock::time_point m_last_heard_from {};
+
+        // Ping/Pong state — sequence counter and send-time map for RTT sampling.
+        std::uint64_t m_next_ping_seq { 0 };
+        std::unordered_map<std::uint64_t, std::chrono::steady_clock::time_point> m_ping_send_times {};
+        std::optional<std::chrono::nanoseconds> m_smoothed_rtt {};
 
     };
 

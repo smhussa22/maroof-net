@@ -14,12 +14,13 @@ namespace maroof::net
 
     }
 
-    PacketHeader Connection::accept_hello(std::uint64_t hello_sequence)
+    PacketHeader Connection::accept_hello(std::uint64_t /*hello_sequence*/)
     {
 
-        // Seed from hello_sequence + 1 so the server expects the client's first Data seq.
-        // seed_receive is a no-op if already set, so a duplicate Hello won't rewind progress.
-        m_channel_0.seed_receive(hello_sequence + 1);
+        // Seed the reliable channel's receive window to 0 — after the channel refactor, the
+        // channel's send counter is independent of the handshake counter and always starts at 0.
+        // seed_receive is idempotent, so a duplicate Hello won't rewind delivery progress.
+        m_channel_0.seed_receive(0);
         m_state = State::Established;
         PacketHeader header { m_next_send_seq++, PacketType::HelloAck, 0, 0 };
         return header;

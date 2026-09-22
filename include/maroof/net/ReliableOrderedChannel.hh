@@ -75,8 +75,8 @@ private:
     bool m_dead { false };
     std::unordered_map<std::uint64_t, PendingPacket> m_pending {};  // in-flight packets awaiting ACK
 
-    // m_next_expected_seq is unset until the first packet arrives (lazy init handles arbitrary start seq).
-    // m_window_base is the circular index of the slot for m_next_expected_seq.
+    // m_next_expected_seq is unset until seed_receive is called (usually from accept_hello) or
+    // until the first packet arrives. m_window_base is the circular index of the front slot.
     std::optional<std::uint64_t> m_next_expected_seq {};
     std::size_t m_window_base { 0 };
     std::bitset<WINDOW_SIZE> m_received {};

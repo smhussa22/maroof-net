@@ -23,6 +23,8 @@ namespace maroof::net
         Data       = 3,   // Payload-carrying packet; channel_id decides how to handle it.
         Ack        = 4,   // Acknowledgment for a reliable Data packet on some channel.
         Disconnect = 5,   // Graceful shutdown notice; peer may free connection state.
+        Ping       = 6,   // Liveness probe; peer replies with Pong echoing the same sequence for RTT.
+        Pong       = 7,   // Reply to a Ping; sequence matches the Ping being answered.
     };
 
     // True if `v` corresponds to a defined PacketType above (excluding None, which
@@ -31,7 +33,7 @@ namespace maroof::net
     inline constexpr bool is_valid_packet_type(std::uint8_t v) noexcept
     {
 
-        return v >= static_cast<std::uint8_t>(PacketType::Hello) && v <= static_cast<std::uint8_t>(PacketType::Disconnect);
+        return v >= static_cast<std::uint8_t>(PacketType::Hello) && v <= static_cast<std::uint8_t>(PacketType::Pong);
     
     }
 

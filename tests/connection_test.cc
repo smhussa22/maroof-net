@@ -175,8 +175,8 @@ TEST(ConnectionDispatch, ReceiveDataRoutesToReliableChannelAndSignalsAck)
     Connection c { make_peer() };
     c.accept_hello(0);
 
-    // Channel 0 packet at expected seq 1 (accept_hello(0) seeds to 1).
-    PacketHeader h { 1, PacketType::Data, ReliableOrderedChannel::CHANNEL_ID, 0 };
+    // Channel 0 packet at expected seq 0 (channels always seed to 0 on accept_hello).
+    PacketHeader h { 0, PacketType::Data, ReliableOrderedChannel::CHANNEL_ID, 0 };
     bool delivered = false;
     bool should_ack = c.receive_data(h, as_bytes("hi"), [&](std::span<const std::byte>) { delivered = true; });
 
