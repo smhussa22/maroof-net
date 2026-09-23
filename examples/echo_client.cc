@@ -167,6 +167,8 @@ int main(int argc, char* argv[])
         auto pkt = wait_for_packet_from(socket, server, std::span<std::byte>(recv_buf), poll_deadline);
         if (!pkt) continue;
 
+        conn.note_activity(std::chrono::steady_clock::now());
+
         if (pkt->header.type == PacketType::Ack)
         {
             conn.handle_ack(pkt->header.sequence);

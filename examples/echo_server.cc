@@ -6,6 +6,7 @@
 
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <print>
@@ -90,6 +91,7 @@ int main(int argc, char* argv[])
         }
 
         it->second.note_received(header.sequence);
+        it->second.note_activity(std::chrono::steady_clock::now());
 
         if (header.type == PacketType::Data)
         {

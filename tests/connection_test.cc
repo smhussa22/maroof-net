@@ -222,3 +222,63 @@ TEST(ConnectionDispatch, ReceiveDataOnUnknownChannelDropsSilently)
     EXPECT_FALSE(delivered);
     EXPECT_FALSE(should_ack);
 }
+
+TEST(ConnectionHeartbeat, MakePingReturnsPingHeaderWithIncrementingSequence)
+{
+    Connection c { make_peer() };
+    auto now = std::chrono::steady_clock::now();
+
+    auto p0 = c.make_ping(now);
+    auto p1 = c.make_ping(now);
+
+    EXPECT_EQ(p0.type, PacketType::Ping);
+    EXPECT_EQ(p0.sequence, 0u);
+    EXPECT_EQ(p1.sequence, 1u);
+}
+
+TEST(ConnectionHeartbeat, OnPingEchoesSequenceAsPong)
+{
+    Connection c { make_peer() };
+    PacketHeader ping { 42, PacketType::Ping, 0, 0 };
+
+    auto pong = c.on_ping(ping);
+
+    EXPECT_EQ(pong.type, PacketType::Pong);
+    EXPECT_EQ(pong.sequence, 42u);
+}
+
+TEST(ConnectionHeartbeat, OnPongUpdatesRtt)
+{
+    Connection c { make_peer() };
+    auto t0 = std::chrono::steady_clock::now();
+
+    auto ping = c.make_ping(t0);
+    PacketHeader pong { ping.sequence, PacketType::Pong, 0, 0 };
+    c.on_pong(pong, t0 + 50ms);
+
+    ASSERT_TRUE(c.rtt().has_value());
+    EXPECT_EQ(*c.rtt(), std::chrono::nanoseconds(50ms));
+}
+
+TEST(ConnectionHeartbeat, OnPongIgnoresUnknownSequence)
+{
+    Connection c { make_peer() };
+    PacketHeader pong { 999, PacketType::Pong, 0, 0 };
+
+    c.on_pong(pong, std::chrono::steady_clock::now());
+
+    EXPECT_FALSE(c.rtt().has_value());
+}
+
+TEST(ConnectionHeartbeat, TickDisconnectsAfterHeartbeatDeath)
+{
+    Connection c { make_peer() };
+    c.accept_hello(0);
+    auto t0 = std::chrono::steady_clock::now();
+    c.note_activity(t0);
+
+    // Well past HEARTBEAT_DEATH (5s).
+    c.tick(t0 + 10s);
+
+    EXPECT_EQ(c.state(), Connection::State::Disconnected);
+}

@@ -25,6 +25,9 @@ target_link_libraries(echo_server PRIVATE maroof_net)
 add_executable(echo_client examples/echo_client.cc)
 target_link_libraries(echo_client PRIVATE maroof_net)
 
+add_executable(flood_client examples/flood_client.cc)
+target_link_libraries(flood_client PRIVATE maroof_net)
+
 # ---------- Tests (Google Test via FetchContent) ----------
 enable_testing()
 

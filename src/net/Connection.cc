@@ -22,6 +22,9 @@ namespace maroof::net
         // seed_receive is idempotent, so a duplicate Hello won't rewind delivery progress.
         m_channel_0.seed_receive(0);
         m_state = State::Established;
+        // Seed the heartbeat timer: the Hello itself is a fresh "just heard from peer" signal.
+        // Without this, the first tick() would fire the death check against time_point{}'s epoch.
+        m_last_heard_from = std::chrono::steady_clock::now();
         PacketHeader header { m_next_send_seq++, PacketType::HelloAck, 0, 0 };
         return header;
 
@@ -33,6 +36,7 @@ namespace maroof::net
         if (m_state == State::Connecting)
         {
             m_state = State::Established;
+            m_last_heard_from = std::chrono::steady_clock::now();
         }
 
         // Established: duplicate late HelloAck, ignore.
@@ -52,6 +56,14 @@ namespace maroof::net
 
     std::vector<std::span<const std::byte>> Connection::tick(std::chrono::steady_clock::time_point now)
     {
+
+        // Heartbeat death: no packet from peer within HEARTBEAT_DEATH means peer is unreachable.
+        // Only meaningful once Established — during Connecting the handshake retry loop drives death.
+        if (m_state == State::Established && now - m_last_heard_from > HEARTBEAT_DEATH)
+        {
+            m_state = State::Disconnected;
+            return {};
+        }
 
         auto retransmits = m_channel_0.tick(now);
         if (m_channel_0.dead())
@@ -85,6 +97,46 @@ namespace maroof::net
     std::span<const std::byte> Connection::send_sequenced(std::span<const std::byte> payload)
     {
         return m_channel_2.send(payload);
+    }
+
+
+    PacketHeader Connection::make_ping(std::chrono::steady_clock::time_point now)
+    {
+
+        PacketHeader header { m_next_ping_seq, PacketType::Ping, 0, 0 };
+        m_ping_send_times.emplace(m_next_ping_seq, now);
+        ++m_next_ping_seq;
+        return header;
+
+    }
+
+    PacketHeader Connection::on_ping(const PacketHeader& ping) const noexcept
+    {
+
+        // TODO: return a Pong header echoing ping.sequence. channel_id and flags = 0.
+        PacketHeader header { ping.sequence, PacketType::Pong, 0, 0 };
+        return header;
+
+    }
+
+    void Connection::on_pong(const PacketHeader& pong, std::chrono::steady_clock::time_point now)
+    {
+
+        auto it { m_ping_send_times.find(pong.sequence) };
+        if (it == m_ping_send_times.end())
+            return;
+        
+        auto send_time { it->second };
+        auto sample { now - send_time };
+
+        // smooth the rtt with an EWMA fold copied from tcp's rto estimator value
+        if (m_smoothed_rtt.has_value())
+            *m_smoothed_rtt = *m_smoothed_rtt * 7 / 8 + sample / 8; 
+        else
+            m_smoothed_rtt = duration_cast<std::chrono::nanoseconds>(sample);
+
+        m_ping_send_times.erase(it);
+
     }
 
 } // namespace maroof::net
