@@ -65,7 +65,7 @@ namespace maroof::net
             return {};
         }
 
-        auto retransmits = m_channel_0.tick(now);
+        auto retransmits = m_channel_0.tick(now, m_smoothed_rtt);
         if (m_channel_0.dead())
         {
             m_state = State::Disconnected;
@@ -86,7 +86,7 @@ namespace maroof::net
 
     std::span<const std::byte> Connection::send_reliable(std::span<const std::byte> payload)
     {
-        return m_channel_0.send(payload);
+        return m_channel_0.send(payload, m_smoothed_rtt);
     }
 
     std::span<const std::byte> Connection::send_unreliable(std::span<const std::byte> payload)

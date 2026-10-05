@@ -147,3 +147,92 @@ TEST(ReliableOrderedRx, SeedReceiveIsIdempotent)
     auto out = collect(ch, 10, as_bytes("first"));
     ASSERT_EQ(out.size(), 1u);
 }
+
+// -------- Adaptive RTO --------
+
+TEST(ReliableOrderedRto, NoRttFallsBackToInitialTimeout)
+{
+    ReliableOrderedChannel ch;
+    ch.send(as_bytes("hi"));  // no RTT supplied
+
+    // Tick just before the 100ms fallback — nothing should fire.
+    auto now = std::chrono::steady_clock::now();
+    auto retransmits = ch.tick(now + std::chrono::milliseconds(50));
+    EXPECT_TRUE(retransmits.empty());
+}
+
+TEST(ReliableOrderedRto, RttDrivenDeadlineFiresEarlierThanFallback)
+{
+    using namespace std::chrono_literals;
+
+    ReliableOrderedChannel ch;
+    // 10ms RTT → base = 15ms → deadline ~15ms from send. Tick at 50ms should fire.
+    ch.send(as_bytes("hi"), 10ms);
+
+    auto now = std::chrono::steady_clock::now();
+    auto retransmits = ch.tick(now + 50ms, 10ms);
+    EXPECT_EQ(retransmits.size(), 1u);
+}
+
+TEST(ReliableOrderedRto, SubMillisecondRttFloorsAtMinRto)
+{
+    using namespace std::chrono_literals;
+
+    ReliableOrderedChannel ch;
+    // 100µs RTT * 1.5 = 150µs, below MIN_RTO (20ms). Tick at 10ms must NOT fire — floor holds.
+    ch.send(as_bytes("hi"), 100us);
+
+    auto now = std::chrono::steady_clock::now();
+    auto retransmits = ch.tick(now + 10ms, 100us);
+    EXPECT_TRUE(retransmits.empty());
+}
+
+// -------- AIMD --------
+
+TEST(ReliableOrderedAimd, SendIncrementsInFlight)
+{
+    ReliableOrderedChannel ch;
+    EXPECT_EQ(ch.in_flight(), 0u);
+    ch.send(as_bytes("a"));
+    ch.send(as_bytes("b"));
+    EXPECT_EQ(ch.in_flight(), 2u);
+}
+
+TEST(ReliableOrderedAimd, AckDecrementsInFlightAndGrowsCwnd)
+{
+    ReliableOrderedChannel ch;
+    const auto start_cwnd = ch.cwnd();
+
+    ch.send(as_bytes("a"));
+    ch.handle_ack(0);
+
+    EXPECT_EQ(ch.in_flight(), 0u);
+    EXPECT_EQ(ch.cwnd(), start_cwnd + 1u);
+}
+
+TEST(ReliableOrderedAimd, DuplicateAckDoesNotGrowCwndFurther)
+{
+    ReliableOrderedChannel ch;
+    ch.send(as_bytes("a"));
+    ch.handle_ack(0);
+    const auto cwnd_after_first = ch.cwnd();
+
+    ch.handle_ack(0);  // duplicate — the packet is already gone from m_pending
+    EXPECT_EQ(ch.cwnd(), cwnd_after_first);
+}
+
+TEST(ReliableOrderedAimd, RetransmitHalvesCwnd)
+{
+    using namespace std::chrono_literals;
+
+    ReliableOrderedChannel ch;
+    const auto start_cwnd = ch.cwnd();
+
+    ch.send(as_bytes("hi"));
+
+    // Tick well past the fallback deadline to force a retransmit.
+    auto now = std::chrono::steady_clock::now();
+    auto retransmits = ch.tick(now + 1s);
+    ASSERT_EQ(retransmits.size(), 1u);
+    EXPECT_EQ(ch.cwnd(), std::max<std::uint32_t>(1, start_cwnd / 2));
+}

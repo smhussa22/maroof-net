@@ -36,11 +36,23 @@ namespace maroof::net
         std::uint8_t  channel_id { 0 };
         std::uint32_t crc32 { 0 };
 
+        // TODO (fragmentation, Phase 3 pending): add two u16 fields and bump
+        // PACKET_HEADER_WIRE_SIZE from 16 to 20. Design:
+        //   std::uint16_t fragment_id    { 0 };  // 0..fragment_count-1
+        //   std::uint16_t fragment_count { 1 };  // 1 = unfragmented (default for all current packets)
+        // Window delivers in sequence order, so fragments of one message arrive contiguously.
+        // Receive side accumulates into a reassembly buffer until fragment_id == fragment_count-1,
+        // then calls deliver() once with the concatenated payload.
+        // Only ReliableOrderedChannel fragments; unreliable channels drop if payload > MTU.
+        // Serialize/parse (src/net/PacketHeader.cc) must learn the two new u16s between
+        // the current CRC field and the payload — or wedge them in before payload_len.
+        // Pick the layout, update PACKET_HEADER_WIRE_SIZE, then propagate to all serialize callers.
+
     };
 
     // Size of the header on the wire. Not sizeof(PacketHeader), which reflects
     // compiler padding and doesn't match the serialized form.
-    inline constexpr std::size_t PACKET_HEADER_WIRE_SIZE = 16;
+    inline constexpr std::size_t PACKET_HEADER_WIRE_SIZE = 16;  // TODO: bump to 20 when fragmentation lands.
 
     enum class PacketError : std::uint8_t
     {
