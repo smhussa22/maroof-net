@@ -62,11 +62,12 @@ TEST(ConnectionReliability, SendReliableReturnsBytesWithHeaderAndPayload)
     c.accept_hello(0);
 
     auto payload = as_bytes("hello");
-    auto bytes = c.send_reliable(payload);
+    auto wires = c.send_reliable(payload);
+    ASSERT_EQ(wires.size(), 1u);
 
-    EXPECT_EQ(bytes.size(), PACKET_HEADER_WIRE_SIZE + payload.size());
+    EXPECT_EQ(wires[0].size(), PACKET_HEADER_WIRE_SIZE + payload.size());
 
-    auto parsed = parse(bytes);
+    auto parsed = parse(wires[0]);
     ASSERT_TRUE(parsed.has_value());
     EXPECT_EQ(parsed->first.type, PacketType::Data);
     EXPECT_EQ(parsed->first.channel_id, 0);
@@ -104,8 +105,9 @@ TEST(ConnectionReliability, HandleAckStopsRetransmits)
     c.send_reliable(as_bytes("hi"));
 
     // Parse the produced bytes to find the sequence number the peer would ACK.
-    auto bytes = c.send_reliable(as_bytes("second"));
-    auto parsed = parse(bytes).value();
+    auto wires = c.send_reliable(as_bytes("second"));
+    ASSERT_EQ(wires.size(), 1u);
+    auto parsed = parse(wires[0]).value();
     auto seq_of_second = parsed.first.sequence;
 
     c.handle_ack(seq_of_second);
@@ -155,14 +157,16 @@ TEST(ConnectionReliability, MakeAckDoesNotConsumeSequenceCounter)
 
     // Sending an Ack shouldn't burn a sequence number - the next Data should
     // start where the previous send left off, not skip past it.
-    auto first_data  = c.send_reliable(as_bytes("a"));
-    auto first_seq   = parse(first_data).value().first.sequence;
+    auto first_wires  = c.send_reliable(as_bytes("a"));
+    ASSERT_EQ(first_wires.size(), 1u);
+    auto first_seq    = parse(first_wires[0]).value().first.sequence;
 
     c.make_ack(999);
     c.make_ack(1000);
 
-    auto second_data = c.send_reliable(as_bytes("b"));
-    auto second_seq  = parse(second_data).value().first.sequence;
+    auto second_wires = c.send_reliable(as_bytes("b"));
+    ASSERT_EQ(second_wires.size(), 1u);
+    auto second_seq   = parse(second_wires[0]).value().first.sequence;
 
     EXPECT_EQ(second_seq, first_seq + 1);
 }

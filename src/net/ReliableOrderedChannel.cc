@@ -28,30 +28,57 @@ namespace maroof::net
         return std::max(scaled, MIN_RTO);
     }
 
-    std::span<const std::byte> ReliableOrderedChannel::send(std::span<const std::byte> payload,
-                                                            std::optional<std::chrono::nanoseconds> rtt)
+    std::vector<std::span<const std::byte>>
+    ReliableOrderedChannel::send(std::span<const std::byte> payload,
+                                 std::optional<std::chrono::nanoseconds> rtt)
     {
 
-        const auto seq { m_next_send_seq++ };
-        PacketHeader header { seq, PacketType::Data, CHANNEL_ID, 0 };
-
-        std::vector<std::byte> buf(PACKET_HEADER_WIRE_SIZE + payload.size());
-        serialize(header, payload, std::span<std::byte>(buf)).value();
+        // Split payload into N fragments of at most MAX_FRAGMENT_PAYLOAD each. A zero-byte
+        // payload still goes out as one "fragment" with fragment_count = 1 so the handshake
+        // of {empty payload reliable send} isn't a special case anywhere else.
+        const std::size_t total = payload.size();
+        const std::size_t fc    = (total == 0)
+                                      ? 1
+                                      : (total + MAX_FRAGMENT_PAYLOAD - 1) / MAX_FRAGMENT_PAYLOAD;
 
         const auto base_timeout = compute_rto(rtt);
-        PendingPacket pending
+        const auto now          = std::chrono::steady_clock::now();
+
+        std::vector<std::span<const std::byte>> wires;
+        wires.reserve(fc);
+
+        for (std::size_t fi = 0; fi < fc; ++fi)
         {
-            .serialized  { std::move(buf) },
-            .retransmit  { std::chrono::steady_clock::now() + base_timeout },
-            .retry_count { 0 },
-        };
 
-        auto [it, inserted] = m_pending.emplace(seq, std::move(pending));
+            const std::size_t off = fi * MAX_FRAGMENT_PAYLOAD;
+            const std::size_t len = (total == 0)
+                                        ? 0
+                                        : std::min(MAX_FRAGMENT_PAYLOAD, total - off);
+            auto frag_payload = payload.subspan(off, len);
 
-        // AIMD: a fresh pending entry means one more packet is now in flight.
-        ++m_in_flight;
+            const auto seq = m_next_send_seq++;
+            PacketHeader header { seq, PacketType::Data, CHANNEL_ID, 0 };
+            header.fragment_id    = static_cast<std::uint16_t>(fi);
+            header.fragment_count = static_cast<std::uint16_t>(fc);
 
-        return std::span<const std::byte>(it->second.serialized);
+            std::vector<std::byte> buf(PACKET_HEADER_WIRE_SIZE + len);
+            serialize(header, frag_payload, std::span<std::byte>(buf)).value();
+
+            PendingPacket pending
+            {
+                .serialized  { std::move(buf) },
+                .retransmit  { now + base_timeout },
+                .retry_count { 0 },
+            };
+
+            auto [it, inserted] = m_pending.emplace(seq, std::move(pending));
+            ++m_in_flight;
+
+            wires.emplace_back(std::span<const std::byte>(it->second.serialized));
+
+        }
+
+        return wires;
 
     }
 

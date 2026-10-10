@@ -24,13 +24,15 @@ public:
 
     static constexpr std::uint8_t CHANNEL_ID { 0 };
 
-    // Serialize and register a reliable packet. Returns wire bytes to send immediately;
-    // span points into storage owned by this channel — send before the next call to send/tick/handle_ack.
+    // Serialize and register a reliable message. Payloads up to MAX_FRAGMENT_PAYLOAD go out as a
+    // single packet; larger payloads are split into N fragments, each with its own sequence number
+    // and (fragment_id, fragment_count) header fields, each tracked independently for retransmit.
+    // Returns one span per fragment, in send order. Spans point into channel-owned storage — send
+    // them all before the next call to send/tick/handle_ack.
     // rtt (optional): current smoothed RTT. When present, drives the retransmit deadline via
-    // compute_rto; when absent, falls back to the hardcoded INITIAL_TIMEOUT. Default std::nullopt
-    // preserves pre-adaptive behavior for callers that don't have an RTT sample yet.
-    std::span<const std::byte> send(std::span<const std::byte> payload,
-                                    std::optional<std::chrono::nanoseconds> rtt = std::nullopt);
+    // compute_rto; when absent, falls back to the hardcoded INITIAL_TIMEOUT.
+    std::vector<std::span<const std::byte>> send(std::span<const std::byte> payload,
+                                                 std::optional<std::chrono::nanoseconds> rtt = std::nullopt);
 
     // Advance retransmit timers. Returns spans to resend; sets dead() on MAX_RETRIES.
     // Caller checks dead() after each call and tears down the Connection if true.
@@ -56,31 +58,15 @@ public:
     // Seed the receive window to first_seq. No-op if already seeded (duplicate Hello must not reset progress).
     void seed_receive(std::uint64_t first_seq);
 
-    // Dedup + reorder via sliding window. Invokes deliver(span) for each in-order payload.
+    // Dedup + reorder via sliding window. Invokes deliver(span) for each in-order message:
+    // for an unfragmented packet (header.fragment_count == 1), fires once with the packet payload;
+    // for a fragmented message, accumulates fragments into a reassembly buffer and fires once with
+    // the full concatenation when the last fragment slides out of the window.
     // Returns true if the packet was accounted for (delivered, stashed, or a known duplicate) — caller should ACK.
     // Returns false for beyond-window or oversized; caller must NOT ACK so the sender keeps retransmitting.
     // Spans passed to deliver are valid only for that call's duration.
     template <typename OnProcessPayload>
-    bool receive(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver);
-
-    // TODO (fragmentation, Phase 3 pending):
-    //   1. send() grows a split path: if payload.size() > MAX_FRAGMENT_PAYLOAD, carve into
-    //      ceil(size / MAX_FRAGMENT_PAYLOAD) fragments, each with its own sequence and
-    //      (fragment_id, fragment_count) header fields. All fragments get retransmit tracking.
-    //   2. The deliver callback in receive() must route through a reassembler before firing to the user:
-    //        if (fragment_count == 1) user_deliver(payload);
-    //        else accumulate into m_reassembly_buf; on last fragment, user_deliver(buf); buf.clear();
-    //      Window already guarantees in-order delivery, so fragments of one message come in order.
-    //   3. Define MAX_FRAGMENT_PAYLOAD (one MTU minus header). MAX_PAYLOAD becomes the per-fragment
-    //      slot size; application-level MAX_MESSAGE_SIZE caps total reassembled size (e.g. 64KB).
-    //   4. New error paths: fragment_count mismatch between consecutive fragments → drop + log;
-    //      reassembly buffer overflow → drop + log.
-    //
-    // Scaffolded members for the reassembly path:
-    //   static constexpr std::size_t MAX_FRAGMENT_PAYLOAD { MAX_PAYLOAD - PACKET_HEADER_WIRE_SIZE };
-    //   static constexpr std::size_t MAX_MESSAGE_SIZE     { 64 * 1024 };
-    //   std::vector<std::byte> m_reassembly_buf {};
-    //   std::uint16_t m_expected_fragment_count { 0 };
+    bool receive(const PacketHeader& header, std::span<const std::byte> payload, OnProcessPayload&& deliver);
 
 private:
 
@@ -103,16 +89,25 @@ private:
     static std::chrono::milliseconds compute_rto(std::optional<std::chrono::nanoseconds> rtt) noexcept;
 
     // Bounded receive window: bitset for O(1) dedup, slot array for payload storage.
-    // ~192 KB per channel; zero heap allocs on the receive hot path once constructed.
+    // Each slot sized to MAX_FRAGMENT_PAYLOAD so slot storage never truncates a fragment.
     static constexpr std::size_t WINDOW_SIZE { 128 };
-    static constexpr std::size_t MAX_PAYLOAD { 1500 };  // one UDP MTU
+
+    // Fragmentation sizing. MAX_FRAGMENT_PAYLOAD is deliberately below a typical path MTU
+    // (1500 Ethernet - 20 IPv4 - 8 UDP = 1472) with extra margin for VPN/tunnel overhead,
+    // so a serialized fragment (header + payload) stays below the smallest MTU we care about.
+    // MAX_MESSAGE_SIZE caps the reassembled payload — bounds the receive-side buffer growth.
+    static constexpr std::size_t MAX_FRAGMENT_PAYLOAD { 1200 };
+    static constexpr std::size_t MAX_MESSAGE_SIZE    { 64 * 1024 };
+    static constexpr std::size_t MAX_PAYLOAD         { MAX_FRAGMENT_PAYLOAD };
 
     struct ReorderSlot
     {
 
         std::uint16_t length { 0 };
+        std::uint16_t fragment_id { 0 };
+        std::uint16_t fragment_count { 1 };  // 1 = unfragmented
         std::array<std::byte, MAX_PAYLOAD> bytes {};
-        
+
     };
 
     std::uint64_t m_next_send_seq { 0 };
@@ -131,11 +126,18 @@ private:
     std::bitset<WINDOW_SIZE> m_received {};
     std::array<ReorderSlot, WINDOW_SIZE> m_slots {};
 
+    // Reassembly scratch for fragmented messages. Fragments arrive in sequence order
+    // (window guarantee), so we just append each one as it drains and fire deliver()
+    // once when the final fragment lands.
+    std::vector<std::byte> m_reassembly_buf {};
+
 };
 
 template <typename OnProcessPayload>
-bool ReliableOrderedChannel::receive(std::uint64_t sequence, std::span<const std::byte> payload, OnProcessPayload&& deliver)
+bool ReliableOrderedChannel::receive(const PacketHeader& header, std::span<const std::byte> payload, OnProcessPayload&& deliver)
 {
+
+    const std::uint64_t sequence = header.sequence;
 
     if (!m_next_expected_seq.has_value())
     {
@@ -163,6 +165,12 @@ bool ReliableOrderedChannel::receive(std::uint64_t sequence, std::span<const std
         return false;
     }
 
+    // fragment_count == 0 is a malformed header (unfragmented must be 1). Treat as untrackable.
+    if (header.fragment_count == 0 || header.fragment_id >= header.fragment_count)
+    {
+        return false;
+    }
+
     const std::size_t slot_idx = (m_window_base + (sequence - next)) % WINDOW_SIZE;
 
     // Duplicate: bit already set. Already accounted for, ACK again.
@@ -173,7 +181,9 @@ bool ReliableOrderedChannel::receive(std::uint64_t sequence, std::span<const std
 
     // Stash into the slot.
     auto& slot = m_slots[slot_idx];
-    slot.length = static_cast<std::uint16_t>(payload.size());
+    slot.length         = static_cast<std::uint16_t>(payload.size());
+    slot.fragment_id    = header.fragment_id;
+    slot.fragment_count = header.fragment_count;
     std::memcpy(slot.bytes.data(), payload.data(), payload.size());
     m_received.set(slot_idx);
 
@@ -187,7 +197,24 @@ bool ReliableOrderedChannel::receive(std::uint64_t sequence, std::span<const std
     while (m_received.test(m_window_base))
     {
         auto& front = m_slots[m_window_base];
-        deliver(std::span<const std::byte>(front.bytes.data(), front.length));
+        std::span<const std::byte> frag { front.bytes.data(), front.length };
+
+        if (front.fragment_count == 1)
+        {
+            // Unfragmented message — deliver straight to the user.
+            deliver(frag);
+        }
+        else
+        {
+            // Fragmented. Accumulate; fire once on the terminal fragment.
+            m_reassembly_buf.insert(m_reassembly_buf.end(), frag.begin(), frag.end());
+            if (front.fragment_id == front.fragment_count - 1)
+            {
+                deliver(std::span<const std::byte>(m_reassembly_buf));
+                m_reassembly_buf.clear();
+            }
+        }
+
         m_received.reset(m_window_base);
         m_next_expected_seq = *m_next_expected_seq + 1;
         m_window_base = (m_window_base + 1) % WINDOW_SIZE;

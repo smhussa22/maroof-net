@@ -62,7 +62,7 @@ TEST(PacketHeaderTest, SerializeFailsIfBufferTooSmall)
     const char* msg = "hello";
     const auto payload = as_bytes(msg, std::strlen(msg));
 
-    std::array<std::byte, 10> tiny_buf {};  // header alone is 16 bytes
+    std::array<std::byte, 10> tiny_buf {};  // header alone is 20 bytes
     auto result = serialize(h, payload, std::span<std::byte>(tiny_buf));
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), PacketError::BufferTooSmall);
@@ -70,7 +70,7 @@ TEST(PacketHeaderTest, SerializeFailsIfBufferTooSmall)
 
 TEST(PacketHeaderTest, ParseFailsOnTruncatedHeader)
 {
-    std::array<std::byte, 8> tiny_buf {};  // less than 16
+    std::array<std::byte, 8> tiny_buf {};  // less than 20
     auto result = parse(std::span<const std::byte>(tiny_buf));
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), PacketError::TruncatedHeader);
@@ -145,4 +145,36 @@ TEST(PacketHeaderTest, ChannelIdRoundTrips)
         auto parsed  = parse(std::span<const std::byte>(buf.data(), written)).value();
         EXPECT_EQ(parsed.first.channel_id, ch);
     }
+}
+
+TEST(PacketHeaderTest, FragmentFieldsRoundTrip)
+{
+    PacketHeader h { 1, PacketType::Data, 0, 0 };
+    h.fragment_id    = 7;
+    h.fragment_count = 42;
+
+    std::array<std::byte, 32> buf {};
+    auto written = serialize(h, {}, std::span<std::byte>(buf)).value();
+    auto parsed  = parse(std::span<const std::byte>(buf.data(), written)).value();
+
+    EXPECT_EQ(parsed.first.fragment_id,    7u);
+    EXPECT_EQ(parsed.first.fragment_count, 42u);
+}
+
+TEST(PacketHeaderTest, FragmentFieldsCoveredByCrc)
+{
+    PacketHeader h { 1, PacketType::Data, 0, 0 };
+    h.fragment_id    = 1;
+    h.fragment_count = 3;
+
+    std::array<std::byte, 32> buf {};
+    auto written = serialize(h, {}, std::span<std::byte>(buf)).value();
+
+    // Tamper with the fragment_count byte at offset 18 — must trip the checksum.
+    buf[18] = std::byte { static_cast<std::uint8_t>(
+        ~std::to_integer<std::uint8_t>(buf[18])) };
+
+    auto result = parse(std::span<const std::byte>(buf.data(), written));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), PacketError::BadChecksum);
 }

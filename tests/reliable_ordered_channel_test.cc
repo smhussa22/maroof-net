@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <maroof/net/PacketHeader.hh>
+#include <maroof/net/PacketType.hh>
 #include <maroof/net/ReliableOrderedChannel.hh>
 
 #include <cstddef>
@@ -16,6 +18,16 @@ namespace
         return { reinterpret_cast<const std::byte*>(s), std::strlen(s) };
     }
 
+    PacketHeader data_header(std::uint64_t seq,
+                             std::uint16_t frag_id    = 0,
+                             std::uint16_t frag_count = 1)
+    {
+        PacketHeader h { seq, PacketType::Data, ReliableOrderedChannel::CHANNEL_ID, 0 };
+        h.fragment_id    = frag_id;
+        h.fragment_count = frag_count;
+        return h;
+    }
+
     // Runs channel.receive and captures each delivered payload as an owned copy
     // so the test can assert on it after the call returns.
     std::vector<std::vector<std::byte>> collect(ReliableOrderedChannel& ch,
@@ -23,7 +35,20 @@ namespace
                                                 std::span<const std::byte> payload)
     {
         std::vector<std::vector<std::byte>> out;
-        ch.receive(seq, payload, [&](std::span<const std::byte> p) {
+        ch.receive(data_header(seq), payload, [&](std::span<const std::byte> p) {
+            out.emplace_back(p.begin(), p.end());
+        });
+        return out;
+    }
+
+    std::vector<std::vector<std::byte>> collect_fragment(ReliableOrderedChannel& ch,
+                                                         std::uint64_t seq,
+                                                         std::uint16_t frag_id,
+                                                         std::uint16_t frag_count,
+                                                         std::span<const std::byte> payload)
+    {
+        std::vector<std::vector<std::byte>> out;
+        ch.receive(data_header(seq, frag_id, frag_count), payload, [&](std::span<const std::byte> p) {
             out.emplace_back(p.begin(), p.end());
         });
         return out;
@@ -122,7 +147,7 @@ TEST(ReliableOrderedRx, BeyondWindowReturnsFalse)
 
     // Way past the window front (window is 128 slots). Should return false so the
     // sender keeps retrying instead of getting a permanent hole.
-    bool accepted = ch.receive(500, as_bytes("far"), [](std::span<const std::byte>) {});
+    bool accepted = ch.receive(data_header(500), as_bytes("far"), [](std::span<const std::byte>) {});
     EXPECT_FALSE(accepted);
 }
 
@@ -133,7 +158,7 @@ TEST(ReliableOrderedRx, BelowWindowReturnsTrue)
 
     // seq 3 is below the window (already delivered as far as we're concerned) —
     // we should re-ACK because our earlier ACK was probably lost.
-    bool accepted = ch.receive(3, as_bytes("stale"), [](std::span<const std::byte>) {});
+    bool accepted = ch.receive(data_header(3), as_bytes("stale"), [](std::span<const std::byte>) {});
     EXPECT_TRUE(accepted);
 }
 
@@ -235,4 +260,103 @@ TEST(ReliableOrderedAimd, RetransmitHalvesCwnd)
     auto retransmits = ch.tick(now + 1s);
     ASSERT_EQ(retransmits.size(), 1u);
     EXPECT_EQ(ch.cwnd(), std::max<std::uint32_t>(1, start_cwnd / 2));
+}
+
+// -------- Fragmentation --------
+
+TEST(ReliableOrderedFragmentation, SmallPayloadIsSingleFragment)
+{
+    ReliableOrderedChannel ch;
+    auto wires = ch.send(as_bytes("hi"));
+    ASSERT_EQ(wires.size(), 1u);
+
+    auto parsed = parse(wires[0]);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->first.fragment_id,    0u);
+    EXPECT_EQ(parsed->first.fragment_count, 1u);
+}
+
+TEST(ReliableOrderedFragmentation, LargePayloadSplitsIntoMultipleFragments)
+{
+    ReliableOrderedChannel ch;
+
+    // 3000 bytes with MAX_FRAGMENT_PAYLOAD=1200 → ceil(3000/1200) = 3 fragments.
+    std::vector<std::byte> big(3000);
+    for (std::size_t i = 0; i < big.size(); ++i)
+    {
+        big[i] = static_cast<std::byte>(i & 0xFF);
+    }
+
+    auto wires = ch.send(std::span<const std::byte>(big));
+    ASSERT_EQ(wires.size(), 3u);
+
+    // Each fragment carries fragment_count=3 and fragment_id 0..2 and consecutive sequences.
+    std::uint64_t prev_seq = 0;
+    for (std::size_t i = 0; i < wires.size(); ++i)
+    {
+        auto parsed = parse(wires[i]);
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_EQ(parsed->first.fragment_id,    i);
+        EXPECT_EQ(parsed->first.fragment_count, 3u);
+        if (i == 0) prev_seq = parsed->first.sequence;
+        else        EXPECT_EQ(parsed->first.sequence, prev_seq + i);
+    }
+}
+
+TEST(ReliableOrderedFragmentation, ReceiveReassemblesInOrderFragments)
+{
+    ReliableOrderedChannel ch;
+
+    // Simulated incoming fragments: three slices of a 7-byte message.
+    auto a = as_bytes("abc");
+    auto b = as_bytes("de");
+    auto c = as_bytes("fg");
+
+    EXPECT_TRUE(collect_fragment(ch, 0, 0, 3, a).empty());  // mid-message, no delivery yet
+    EXPECT_TRUE(collect_fragment(ch, 1, 1, 3, b).empty());
+    auto out = collect_fragment(ch, 2, 2, 3, c);
+
+    ASSERT_EQ(out.size(), 1u);
+    ASSERT_EQ(out[0].size(), 7u);
+    EXPECT_EQ(std::memcmp(out[0].data(), "abcdefg", 7), 0);
+}
+
+TEST(ReliableOrderedFragmentation, ReceiveReassemblesOutOfOrderFragments)
+{
+    ReliableOrderedChannel ch;
+    ch.seed_receive(0);  // in production, accept_hello seeds the window to 0
+
+    // Fragments arrive 2, 0, 1 — window stashes them and drains in order on the gap-fill.
+    auto a = as_bytes("abc");
+    auto b = as_bytes("de");
+    auto c = as_bytes("fg");
+
+    EXPECT_TRUE(collect_fragment(ch, 2, 2, 3, c).empty());  // stashed
+    EXPECT_TRUE(collect_fragment(ch, 0, 0, 3, a).empty());  // front; waits for 1 before draining 2
+    auto out = collect_fragment(ch, 1, 1, 3, b);            // drains 1 then 2 → delivers
+
+    ASSERT_EQ(out.size(), 1u);
+    ASSERT_EQ(out[0].size(), 7u);
+    EXPECT_EQ(std::memcmp(out[0].data(), "abcdefg", 7), 0);
+}
+
+TEST(ReliableOrderedFragmentation, FragmentsAreIndependentlyRetransmitted)
+{
+    using namespace std::chrono_literals;
+
+    ReliableOrderedChannel ch;
+
+    std::vector<std::byte> big(2500);  // → 3 fragments
+    auto wires = ch.send(std::span<const std::byte>(big));
+    ASSERT_EQ(wires.size(), 3u);
+    EXPECT_EQ(ch.in_flight(), 3u);
+
+    // ACK the middle fragment only — the other two should still retransmit on timeout.
+    auto parsed_middle = parse(wires[1]);
+    ASSERT_TRUE(parsed_middle.has_value());
+    ch.handle_ack(parsed_middle->first.sequence);
+    EXPECT_EQ(ch.in_flight(), 2u);
+
+    auto retransmits = ch.tick(std::chrono::steady_clock::now() + 1s);
+    EXPECT_EQ(retransmits.size(), 2u);
 }

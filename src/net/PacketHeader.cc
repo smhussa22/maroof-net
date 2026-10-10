@@ -94,6 +94,8 @@ namespace maroof::net
         out[9] = std::byte(header.channel_id);
         write_u16_be(out.data() + 10, static_cast<std::uint16_t>(payload.size()));
         write_u32_be(out.data() + 12, 0u);  // placeholder — CRC patched below
+        write_u16_be(out.data() + 16, header.fragment_id);
+        write_u16_be(out.data() + 18, header.fragment_count);
 
         if (!payload.empty())
         {
@@ -134,6 +136,8 @@ namespace maroof::net
         // expose the payload as a span and callers use span.size() instead.
         const std::uint16_t payload_len = read_u16_be(in.data() + 10);
         header.crc32                    = read_u32_be(in.data() + 12);
+        header.fragment_id              = read_u16_be(in.data() + 16);
+        header.fragment_count           = read_u16_be(in.data() + 18);
 
         // Guard against a lying length (sender claims more bytes than arrived).
         const std::size_t remaining = in.size() - PACKET_HEADER_WIRE_SIZE;
@@ -143,8 +147,8 @@ namespace maroof::net
         }
 
         // Verify the CRC. Hash bytes 0..11 (before the CRC field), then four
-        // literal zeros in place of the CRC field, then the payload. This must
-        // match what serialize() computed.
+        // literal zeros in place of the CRC field, then the fragment fields
+        // (16..19), then the payload. Must match what serialize() computed.
         Crc32 crc;
         crc.update(in.subspan(0, 12));
 
@@ -153,6 +157,7 @@ namespace maroof::net
         };
         crc.update(std::span<const std::byte>(ZERO_CRC, 4));
 
+        crc.update(in.subspan(16, 4));
         crc.update(in.subspan(PACKET_HEADER_WIRE_SIZE, payload_len));
 
         if (crc.value() != header.crc32)

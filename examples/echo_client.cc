@@ -130,13 +130,17 @@ int main(int argc, char* argv[])
         message.size()
     };
 
-    auto reliable_bytes = conn.send_reliable(payload);
-    if (!socket.send_to(reliable_bytes, server).has_value())
+    auto wires = conn.send_reliable(payload);
+    for (auto bytes : wires)
     {
-        std::println("send Data failed");
-        return 1;
+        if (!socket.send_to(bytes, server).has_value())
+        {
+            std::println("send Data failed");
+            return 1;
+        }
     }
-    std::println("sent {} bytes as reliable Data: \"{}\"", message.size(), message);
+    std::println("sent {} bytes as reliable Data in {} fragment(s): \"{}\"",
+                 message.size(), wires.size(), message);
 
     // Loop until we've received the echoed Data back OR too long has passed.
     // On each pass: check retransmit timers (tick), then poll briefly for a

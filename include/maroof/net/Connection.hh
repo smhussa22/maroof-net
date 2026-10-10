@@ -69,12 +69,15 @@ namespace maroof::net
         // Smoothed round-trip time. std::nullopt until the first Pong lands.
         std::optional<std::chrono::nanoseconds> rtt() const noexcept { return m_smoothed_rtt; }
 
-        // Per-channel send. Takes a readable byte payload, returns a span of the fully serialized
-        // wire bytes (header + payload) into channel-owned storage. Hand it to socket.send_to
-        // immediately — the span is invalidated by the next call to send on the same channel.
-        std::span<const std::byte> send_reliable  (std::span<const std::byte> payload);  // channel 0
-        std::span<const std::byte> send_unreliable(std::span<const std::byte> payload);  // channel 1
-        std::span<const std::byte> send_sequenced (std::span<const std::byte> payload);  // channel 2
+        // Per-channel send. Takes a readable byte payload, returns the fully serialized wire bytes
+        // (header + payload) in channel-owned storage. Hand the spans to socket.send_to immediately —
+        // they are invalidated by the next call to send on the same channel.
+        //
+        // send_reliable may fragment: callers must send every span in the returned vector, in order,
+        // for payloads that exceed one path MTU. Unreliable/sequenced always return a single span.
+        std::vector<std::span<const std::byte>> send_reliable  (std::span<const std::byte> payload);  // channel 0
+        std::span<const std::byte>              send_unreliable(std::span<const std::byte> payload);  // channel 1
+        std::span<const std::byte>              send_sequenced (std::span<const std::byte> payload);  // channel 2
 
         // Dispatch incoming Data to the channel indicated by header.channel_id.
         // Returns true if the caller should ACK (only ever true for the reliable channel);
@@ -117,7 +120,7 @@ namespace maroof::net
         {
 
             case ReliableOrderedChannel::CHANNEL_ID:
-                return m_channel_0.receive(header.sequence, payload, std::forward<OnProcessPayload>(deliver));
+                return m_channel_0.receive(header, payload, std::forward<OnProcessPayload>(deliver));
 
             case UnreliableUnorderedChannel::CHANNEL_ID:
                 m_channel_1.receive(header.sequence, payload, std::forward<OnProcessPayload>(deliver));

@@ -84,7 +84,7 @@ namespace maroof::net
         return m_channel_0.make_ack(received_sequence);
     }
 
-    std::span<const std::byte> Connection::send_reliable(std::span<const std::byte> payload)
+    std::vector<std::span<const std::byte>> Connection::send_reliable(std::span<const std::byte> payload)
     {
         return m_channel_0.send(payload, m_smoothed_rtt);
     }

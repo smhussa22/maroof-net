@@ -128,8 +128,11 @@ int main(int argc, char* argv[])
             reinterpret_cast<const std::byte*>(&payload_val),
             sizeof(payload_val)
         };
-        auto bytes = conn.send_reliable(payload);
-        socket.send_to(bytes, server).value();
+        auto wires = conn.send_reliable(payload);
+        for (auto bytes : wires)
+        {
+            socket.send_to(bytes, server).value();
+        }
 
     }
     std::println("[flood] queued {} reliable sends in {} ms",
