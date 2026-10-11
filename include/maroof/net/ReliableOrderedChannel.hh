@@ -1,6 +1,7 @@
 #ifndef MAROOF_NET_RELIABLE_ORDERED_CHANNEL_HH
 #define MAROOF_NET_RELIABLE_ORDERED_CHANNEL_HH
 
+#include <maroof/net/LatencyHistogram.hh>
 #include <maroof/net/PacketHeader.hh>
 #include <maroof/net/PendingPacket.hh>
 
@@ -48,6 +49,10 @@ public:
 
     // True once MAX_RETRIES is exhausted on any unacked packet; peer is considered unreachable.
     bool dead() const noexcept { return m_dead; }
+
+    // Send→ack latency histogram. Records one sample per real (non-duplicate) ACK, timed from
+    // the packet's original send to the ACK's arrival — includes retry time.
+    const LatencyHistogram& send_ack_latency() const noexcept { return m_send_ack_latency; }
 
     // Remove sequence from pending; no-op on unknown sequence (duplicate or already cleared ACK).
     void handle_ack(std::uint64_t sequence);
@@ -130,6 +135,10 @@ private:
     // (window guarantee), so we just append each one as it drains and fire deliver()
     // once when the final fragment lands.
     std::vector<std::byte> m_reassembly_buf {};
+
+    // Trackable range: 1 ns to 60 s with 3-sigfig precision (~0.1% relative error, ~2 KB resident).
+    // Covers everything from a LAN ping to a worst-case retry chain without re-tuning.
+    LatencyHistogram m_send_ack_latency { std::chrono::nanoseconds { 1 }, std::chrono::seconds { 60 } };
 
 };
 

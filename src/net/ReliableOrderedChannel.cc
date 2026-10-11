@@ -66,9 +66,10 @@ namespace maroof::net
 
             PendingPacket pending
             {
-                .serialized  { std::move(buf) },
-                .retransmit  { now + base_timeout },
-                .retry_count { 0 },
+                .serialized    { std::move(buf) },
+                .retransmit    { now + base_timeout },
+                .retry_count   { 0 },
+                .first_sent_at { now },
             };
 
             auto [it, inserted] = m_pending.emplace(seq, std::move(pending));
@@ -125,13 +126,21 @@ namespace maroof::net
 
     void ReliableOrderedChannel::handle_ack(std::uint64_t sequence)
     {
-        // erase returns 1 if the key existed, 0 otherwise. Only adjust AIMD state on a real ACK;
-        // duplicate/late ACKs for already-cleared packets must not grow cwnd beyond observed signal.
-        if (m_pending.erase(sequence) == 1)
-        {
-            if (m_in_flight > 0) --m_in_flight;
-            m_cwnd = std::min(MAX_CWND, m_cwnd + 1u);  // AIMD additive increase
-        }
+        // find-then-erase so we can read first_sent_at before the entry disappears.
+        // Duplicate / late ACKs (key missing) must not record a sample or grow cwnd.
+        const auto it = m_pending.find(sequence);
+        if (it == m_pending.end()) return;
+
+        // Sample is end-to-end send→ack from the ORIGINAL send, not the latest retransmit —
+        // includes retry time, which is the latency the application actually sees.
+        const auto now    = std::chrono::steady_clock::now();
+        const auto sample = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                now - it->second.first_sent_at);
+        m_send_ack_latency.record(sample);
+
+        m_pending.erase(it);
+        if (m_in_flight > 0) --m_in_flight;
+        m_cwnd = std::min(MAX_CWND, m_cwnd + 1u);  // AIMD additive increase
     }
 
     PacketHeader ReliableOrderedChannel::make_ack(std::uint64_t received_sequence)
