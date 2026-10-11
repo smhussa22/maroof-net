@@ -3,7 +3,11 @@
 namespace maroof::net
 {
 
-    Connection::Connection(const Endpoint& peer) : m_peer { peer } { }
+    Connection::Connection(const Endpoint& peer) : m_peer { peer }
+    {
+        // Hook the reliable channel's observability counters into this Connection's stats block.
+        m_channel_0.set_stats_sink(&m_stats);
+    }
 
     PacketHeader Connection::make_hello()
     {
@@ -86,17 +90,17 @@ namespace maroof::net
 
     std::vector<std::span<const std::byte>> Connection::send_reliable(std::span<const std::byte> payload)
     {
-        return m_channel_0.send(payload, m_smoothed_rtt);
+        return m_channel_0.send(payload, m_smoothed_rtt, take_pending_piggyback_ack());
     }
 
     std::span<const std::byte> Connection::send_unreliable(std::span<const std::byte> payload)
     {
-        return m_channel_1.send(payload);
+        return m_channel_1.send(payload, take_pending_piggyback_ack());
     }
 
     std::span<const std::byte> Connection::send_sequenced(std::span<const std::byte> payload)
     {
-        return m_channel_2.send(payload);
+        return m_channel_2.send(payload, take_pending_piggyback_ack());
     }
 
 

@@ -51,9 +51,9 @@ namespace maroof::net
     {
     public:
 
-        // PACKET_HEADER_WIRE_SIZE (20) + MAX_FRAGMENT_PAYLOAD (1200). Hard-coded to avoid a
+        // PACKET_HEADER_WIRE_SIZE (28) + MAX_FRAGMENT_PAYLOAD (1200). Hard-coded to avoid a
         // circular include with ReliableOrderedChannel.hh; keep in sync if those change.
-        static constexpr std::size_t SLOT_SIZE { 1220 };
+        static constexpr std::size_t SLOT_SIZE { 1228 };
 
         explicit PacketPool(std::size_t n_slots);
 

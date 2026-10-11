@@ -14,6 +14,8 @@ A reliable-UDP transport library in modern C++23. Connection-oriented, message-o
 - Adaptive RTO from an EWMA-smoothed RTT (`Ping`/`Pong`), with exponential backoff and a floor
 - AIMD congestion window (per-ACK additive increase, per-retransmit multiplicative decrease)
 - CRC32 over the full header + payload; type-safe `PacketHeader` serialize/parse
+- UDP multicast (`join_multicast_group`, `MCAST_JOIN_SOURCE_GROUP` for SSM) + `SO_REUSEPORT` for multi-threaded fanout
+- Piggybacked ACKs — the Connection stashes the pending ACK and the next outbound send on any channel attaches it to its header automatically. Stand-alone Ack packets only fire when the receiver has nothing to say back.
 
 **Performance**
 - Zero-allocation `send()` hot path via a fixed-size `PacketPool` + RAII `PooledBuffer`
@@ -31,32 +33,37 @@ A reliable-UDP transport library in modern C++23. Connection-oriented, message-o
 ## Example
 
 ```cpp
-#include <maroof/net/Connection.hh>
-#include <maroof/net/UdpSocket.hh>
-
+#include <maroof/net/Client.hh>
+#include <maroof/net/Server.hh>
 using namespace maroof::net;
 
+// Server ---------------------------------------------------------------
+Server server { Endpoint("0.0.0.0", 9000) };
+server
+    .on_connect   ([](Connection& c) { /* new peer */ })
+    .on_receive   ([](Connection& c, std::span<const std::byte> p, std::uint8_t ch) {
+        // handle message on channel ch
+    })
+    .on_disconnect([](const Endpoint& peer) { /* peer went away */ });
+server.run();   // or server.tick() per frame
+
 // Client ---------------------------------------------------------------
-UdpSocket socket;
-socket.set_nonblocking().value();
-Connection conn { Endpoint("10.0.0.5", 9000) };
-
-// Handshake
-auto hello = conn.make_hello();
-std::array<std::byte, 2048> buf;
-auto n = serialize(hello, {}, buf).value();
-socket.send_to({buf.data(), n}, conn.peer());
-
-// Send a reliable message. Returns one span per wire fragment.
-auto wires = conn.send_reliable(payload);
-for (auto bytes : wires) socket.send_to(bytes, conn.peer());
-
-// Advance retransmit timers each loop iteration.
-auto retransmits = conn.tick(std::chrono::steady_clock::now());
-for (auto bytes : retransmits) socket.send_to(bytes, conn.peer());
+Client client { Endpoint("10.0.0.5", 9000) };
+client
+    .on_connect([&] { client.send_reliable(my_payload); })
+    .on_receive([](std::span<const std::byte> p, std::uint8_t ch) { /* reply */ });
+client.connect();
+while (true) client.tick();
 ```
 
-Full working examples in `examples/`: `echo_client`, `echo_server` (epoll + batched I/O), `echo_server_uring` (io_uring), `flood_client` (reliability stress test), `latency_bench` (CO-safe benchmark harness).
+Hand-driven alternatives (for callers who want the IO loop under their own control): `UdpSocket` + `Connection` directly. See `examples/echo_server.cc` for the explicit pattern.
+
+Full examples in `examples/`:
+- `simple_server` / `simple_client` — the API shown above
+- `echo_server` — hand-driven `epoll` + `recvmmsg` + `sendmmsg`
+- `echo_server_uring` — hand-driven `io_uring`
+- `flood_client` — 1000-message reliability stress test
+- `latency_bench` — CO-safe fixed-rate benchmark harness
 
 ## Build
 

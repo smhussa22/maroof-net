@@ -205,6 +205,88 @@ namespace maroof::net
 
     }
 
+    namespace
+    {
+        // Fill an ip_mreq from a group endpoint + optional interface IP string.
+        ip_mreq make_mreq(const Endpoint& group, const char* iface_ip) noexcept
+        {
+            ip_mreq r {};
+            r.imr_multiaddr.s_addr = group.to_sockaddr_in().sin_addr.s_addr;
+            if (iface_ip)
+            {
+                ::inet_pton(AF_INET, iface_ip, &r.imr_interface.s_addr);
+            }
+            else
+            {
+                r.imr_interface.s_addr = htonl(INADDR_ANY);
+            }
+            return r;
+        }
+    }
+
+    std::expected<void, ErrorCode>
+    UdpSocket::join_multicast_group(const Endpoint& group, const char* iface_ip)
+    {
+        auto mreq = make_mreq(group, iface_ip);
+        if (::setsockopt(m_socket_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1)
+        {
+            return std::unexpected(error_from_errno(errno));
+        }
+        return {};
+    }
+
+    std::expected<void, ErrorCode>
+    UdpSocket::leave_multicast_group(const Endpoint& group, const char* iface_ip)
+    {
+        auto mreq = make_mreq(group, iface_ip);
+        if (::setsockopt(m_socket_fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &mreq, sizeof(mreq)) == -1)
+        {
+            return std::unexpected(error_from_errno(errno));
+        }
+        return {};
+    }
+
+    std::expected<void, ErrorCode>
+    UdpSocket::join_multicast_source(const Endpoint& group, const Endpoint& source,
+                                     const char* iface_ip)
+    {
+        ip_mreq_source req {};
+        req.imr_multiaddr.s_addr  = group.to_sockaddr_in().sin_addr.s_addr;
+        req.imr_sourceaddr.s_addr = source.to_sockaddr_in().sin_addr.s_addr;
+        if (iface_ip)
+        {
+            ::inet_pton(AF_INET, iface_ip, &req.imr_interface.s_addr);
+        }
+        else
+        {
+            req.imr_interface.s_addr = htonl(INADDR_ANY);
+        }
+        if (::setsockopt(m_socket_fd, IPPROTO_IP, IP_ADD_SOURCE_MEMBERSHIP, &req, sizeof(req)) == -1)
+        {
+            return std::unexpected(error_from_errno(errno));
+        }
+        return {};
+    }
+
+    std::expected<void, ErrorCode> UdpSocket::set_reuse_port()
+    {
+        int on = 1;
+        if (::setsockopt(m_socket_fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) == -1)
+        {
+            return std::unexpected(error_from_errno(errno));
+        }
+        return {};
+    }
+
+    std::expected<void, ErrorCode> UdpSocket::set_recv_buffer_size(int bytes)
+    {
+        if (::setsockopt(m_socket_fd, SOL_SOCKET, SO_RCVBUF, &bytes, sizeof(bytes)) == -1)
+        {
+            return std::unexpected(error_from_errno(errno));
+        }
+        return {};
+    }
+
     std::expected<void, ErrorCode> UdpSocket::set_nonblocking()
     {
 

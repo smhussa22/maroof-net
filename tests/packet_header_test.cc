@@ -96,7 +96,7 @@ TEST(PacketHeaderTest, ParseFailsOnBadChecksum)
     const char* msg = "hello";
     const auto payload = as_bytes(msg, std::strlen(msg));
 
-    std::array<std::byte, 32> buf {};
+    std::array<std::byte, 48> buf {};
     auto written = serialize(h, payload, std::span<std::byte>(buf)).value();
 
     // Flip the last payload byte to guarantee a CRC mismatch.
@@ -114,7 +114,7 @@ TEST(PacketHeaderTest, ParseFailsOnTruncatedPayload)
     const char* msg = "hello";
     const auto payload = as_bytes(msg, std::strlen(msg));
 
-    std::array<std::byte, 32> buf {};
+    std::array<std::byte, 48> buf {};
     auto written = serialize(h, payload, std::span<std::byte>(buf)).value();
 
     // Chop off part of the payload — wire length still claims the full amount.
@@ -167,7 +167,7 @@ TEST(PacketHeaderTest, FragmentFieldsCoveredByCrc)
     h.fragment_id    = 1;
     h.fragment_count = 3;
 
-    std::array<std::byte, 32> buf {};
+    std::array<std::byte, 48> buf {};
     auto written = serialize(h, {}, std::span<std::byte>(buf)).value();
 
     // Tamper with the fragment_count byte at offset 18 — must trip the checksum.
@@ -177,4 +177,28 @@ TEST(PacketHeaderTest, FragmentFieldsCoveredByCrc)
     auto result = parse(std::span<const std::byte>(buf.data(), written));
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), PacketError::BadChecksum);
+}
+
+TEST(PacketHeaderTest, PiggybackAckRoundTrips)
+{
+    PacketHeader h { 1, PacketType::Data, 0, 0 };
+    h.piggyback_ack_seq = 0xABCD1234EEEE5678ull;
+
+    std::array<std::byte, 48> buf {};
+    auto written = serialize(h, {}, std::span<std::byte>(buf)).value();
+    auto parsed  = parse(std::span<const std::byte>(buf.data(), written)).value();
+
+    EXPECT_EQ(parsed.first.piggyback_ack_seq, 0xABCD1234EEEE5678ull);
+}
+
+TEST(PacketHeaderTest, PiggybackAckSentinelMeansNone)
+{
+    PacketHeader h { 1, PacketType::Data, 0, 0 };
+    // Default is NO_PIGGYBACK_ACK — no explicit set.
+
+    std::array<std::byte, 48> buf {};
+    auto written = serialize(h, {}, std::span<std::byte>(buf)).value();
+    auto parsed  = parse(std::span<const std::byte>(buf.data(), written)).value();
+
+    EXPECT_EQ(parsed.first.piggyback_ack_seq, NO_PIGGYBACK_ACK);
 }

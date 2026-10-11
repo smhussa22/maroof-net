@@ -73,6 +73,35 @@ namespace maroof::net
       // returns WouldBlock instead of hanging the calling thread.
       [[nodiscard]] std::expected<void, ErrorCode> set_nonblocking();
 
+      // --- Multicast ------------------------------------------------------------
+      //
+      // Subscribers: bind() to the group port (or any port), then join_multicast_group(group)
+      // to receive packets published to that group. Publishers: just send_to(group, ...).
+      //
+      // group.address() must be in the 224.0.0.0 / 4 range. Local-interface selection uses the
+      // kernel's default route; override by setting `iface` to a specific host IP.
+
+      [[nodiscard]] std::expected<void, ErrorCode>
+      join_multicast_group(const Endpoint& group, const char* iface_ip = nullptr);
+
+      [[nodiscard]] std::expected<void, ErrorCode>
+      leave_multicast_group(const Endpoint& group, const char* iface_ip = nullptr);
+
+      // Source-Specific Multicast: subscribe to a group but only accept packets whose source IP
+      // matches `source`. Used by market feeds for A/B arbitration between primary + backup pubs.
+      [[nodiscard]] std::expected<void, ErrorCode>
+      join_multicast_source(const Endpoint& group, const Endpoint& source,
+                            const char* iface_ip = nullptr);
+
+      // Enable SO_REUSEPORT so multiple sockets can bind to the same (addr, port). On Linux the
+      // kernel load-balances incoming datagrams across them by 4-tuple hash — this is the standard
+      // multi-threaded UDP scaling pattern. Must be called before bind().
+      [[nodiscard]] std::expected<void, ErrorCode> set_reuse_port();
+
+      // Set the kernel socket receive buffer. The default (~212 KB) is tiny; 8-16 MB prevents
+      // drops under bursty load. Linux clamps to 2× your value and caps at sysctl net.core.rmem_max.
+      [[nodiscard]] std::expected<void, ErrorCode> set_recv_buffer_size(int bytes);
+
       // Raw fd — needed to register the socket with EpollReactor (or io_uring, etc).
       int fd() const noexcept { return m_socket_fd; }
 

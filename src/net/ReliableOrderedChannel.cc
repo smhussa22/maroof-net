@@ -30,7 +30,8 @@ namespace maroof::net
 
     std::vector<std::span<const std::byte>>
     ReliableOrderedChannel::send(std::span<const std::byte> payload,
-                                 std::optional<std::chrono::nanoseconds> rtt)
+                                 std::optional<std::chrono::nanoseconds> rtt,
+                                 std::optional<std::uint64_t> piggyback_ack)
     {
 
         // Split payload into N fragments of at most MAX_FRAGMENT_PAYLOAD each. A zero-byte
@@ -60,6 +61,8 @@ namespace maroof::net
             PacketHeader header { seq, PacketType::Data, CHANNEL_ID, 0 };
             header.fragment_id    = static_cast<std::uint16_t>(fi);
             header.fragment_count = static_cast<std::uint16_t>(fc);
+            // Piggyback rides on the first fragment only, so the receiver counts the ACK once.
+            if (fi == 0 && piggyback_ack.has_value()) header.piggyback_ack_seq = *piggyback_ack;
 
             auto buf = m_pool->acquire(PACKET_HEADER_WIRE_SIZE + len);
             serialize(header, frag_payload, buf.bytes()).value();
@@ -126,6 +129,7 @@ namespace maroof::net
             const auto new_deadline = now + backoff;
             packet.retransmit = new_deadline;
             retransmits.push_back(packet.serialized.bytes());
+            if (m_stats) ++m_stats->retransmits;
 
             // AIMD multiplicative decrease: every retransmit halves the window, floored at MIN_CWND.
             m_cwnd = std::max(MIN_CWND, m_cwnd / 2u);
@@ -145,7 +149,11 @@ namespace maroof::net
         // find-then-erase so we can read first_sent_at before the entry disappears.
         // Duplicate / late ACKs (key missing) must not record a sample or grow cwnd.
         const auto it = m_pending.find(sequence);
-        if (it == m_pending.end()) return;
+        if (it == m_pending.end())
+        {
+            if (m_stats) ++m_stats->duplicate_acks_ignored;
+            return;
+        }
 
         // Sample is end-to-end send→ack from the ORIGINAL send, not the latest retransmit —
         // includes retry time, which is the latency the application actually sees.

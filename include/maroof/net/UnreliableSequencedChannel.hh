@@ -19,7 +19,9 @@ public:
     static constexpr std::uint8_t CHANNEL_ID { 2 };
 
     // Serialize payload and return wire bytes. Send before the next call to send().
-    std::span<const std::byte> send(std::span<const std::byte> payload);
+    // piggyback_ack: if present, the receiver will treat it as an ACK for its reliable channel.
+    std::span<const std::byte> send(std::span<const std::byte> payload,
+                                    std::optional<std::uint64_t> piggyback_ack = std::nullopt);
 
     // Latest-wins delivery. Deliver only if sequence is strictly newer than m_highest_received_seq.
     // Drop silently if stale — an old update arriving late is worse than missing.

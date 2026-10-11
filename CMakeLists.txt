@@ -19,6 +19,8 @@ add_library(maroof_net STATIC
     src/net/PacketPool.cc
     src/net/EpollReactor.cc
     src/net/IoUringReactor.cc
+    src/net/Server.cc
+    src/net/Client.cc
 )
 target_include_directories(maroof_net PUBLIC include/)
 
@@ -37,6 +39,12 @@ target_link_libraries(latency_bench PRIVATE maroof_net)
 
 add_executable(echo_server_uring examples/echo_server_uring.cc)
 target_link_libraries(echo_server_uring PRIVATE maroof_net)
+
+add_executable(simple_server examples/simple_server.cc)
+target_link_libraries(simple_server PRIVATE maroof_net)
+
+add_executable(simple_client examples/simple_client.cc)
+target_link_libraries(simple_client PRIVATE maroof_net)
 
 # ---------- Tests (Google Test via FetchContent) ----------
 enable_testing()

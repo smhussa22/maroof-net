@@ -1,6 +1,7 @@
 #ifndef MAROOF_NET_RELIABLE_ORDERED_CHANNEL_HH
 #define MAROOF_NET_RELIABLE_ORDERED_CHANNEL_HH
 
+#include <maroof/net/ConnectionStats.hh>
 #include <maroof/net/LatencyHistogram.hh>
 #include <maroof/net/PacketHeader.hh>
 #include <maroof/net/PacketPool.hh>
@@ -34,8 +35,11 @@ public:
     // them all before the next call to send/tick/handle_ack.
     // rtt (optional): current smoothed RTT. When present, drives the retransmit deadline via
     // compute_rto; when absent, falls back to the hardcoded INITIAL_TIMEOUT.
+    // piggyback_ack (optional): if present, rides along on only the FIRST fragment so the receiver
+    // sees it exactly once.
     std::vector<std::span<const std::byte>> send(std::span<const std::byte> payload,
-                                                 std::optional<std::chrono::nanoseconds> rtt = std::nullopt);
+                                                 std::optional<std::chrono::nanoseconds> rtt = std::nullopt,
+                                                 std::optional<std::uint64_t> piggyback_ack = std::nullopt);
 
     // Advance retransmit timers. Returns spans to resend; sets dead() on MAX_RETRIES.
     // Caller checks dead() after each call and tears down the Connection if true.
@@ -55,6 +59,9 @@ public:
     // Send→ack latency histogram. Records one sample per real (non-duplicate) ACK, timed from
     // the packet's original send to the ACK's arrival — includes retry time.
     const LatencyHistogram& send_ack_latency() const noexcept { return m_send_ack_latency; }
+
+    // Attach an observer sink. Null disables stat updates. Called once at Connection ctor time.
+    void set_stats_sink(ConnectionStats* sink) noexcept { m_stats = sink; }
 
     // Remove sequence from pending; no-op on unknown sequence (duplicate or already cleared ACK).
     void handle_ack(std::uint64_t sequence);
@@ -154,6 +161,9 @@ private:
     static constexpr std::size_t POOL_CAPACITY { 8192 };
     std::unique_ptr<PacketPool> m_pool { std::make_unique<PacketPool>(POOL_CAPACITY) };
 
+    // Non-owning sink for observability counters. Null = no-op update everywhere.
+    ConnectionStats* m_stats { nullptr };
+
 };
 
 template <typename OnProcessPayload>
@@ -172,6 +182,7 @@ bool ReliableOrderedChannel::receive(const PacketHeader& header, std::span<const
     // Below window: already delivered. ACK again — our earlier ACK was probably lost.
     if (sequence < next)
     {
+        if (m_stats) ++m_stats->below_window_reacked;
         return true;
     }
 
@@ -179,18 +190,21 @@ bool ReliableOrderedChannel::receive(const PacketHeader& header, std::span<const
     // the window slides far enough to accept it. ACKing here would drop the packet forever.
     if (sequence >= next + WINDOW_SIZE)
     {
+        if (m_stats) ++m_stats->beyond_window_dropped;
         return false;
     }
 
     // Payload wouldn't fit a slot — same as beyond-window: can't track it.
     if (payload.size() > MAX_PAYLOAD)
     {
+        if (m_stats) ++m_stats->beyond_window_dropped;
         return false;
     }
 
     // fragment_count == 0 is a malformed header (unfragmented must be 1). Treat as untrackable.
     if (header.fragment_count == 0 || header.fragment_id >= header.fragment_count)
     {
+        if (m_stats) ++m_stats->malformed_dropped;
         return false;
     }
 

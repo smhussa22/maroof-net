@@ -1,6 +1,7 @@
 #ifndef MAROOF_NET_CONNECTION_HH
 #define MAROOF_NET_CONNECTION_HH
 
+#include <maroof/net/ConnectionStats.hh>
 #include <maroof/net/Endpoint.hh>
 #include <maroof/net/PacketHeader.hh>
 #include <maroof/net/ReliableOrderedChannel.hh>
@@ -86,8 +87,20 @@ namespace maroof::net
         template<typename OnProcessPayload>
         bool receive_data(const PacketHeader& header, std::span<const std::byte> payload, OnProcessPayload&& deliver);
 
-        void note_activity(std::chrono::steady_clock::time_point now) { m_last_heard_from = now; }  
+        void note_activity(std::chrono::steady_clock::time_point now) { m_last_heard_from = now; }
         std::chrono::steady_clock::time_point last_heard_from() const noexcept { return m_last_heard_from; }
+
+        // Observability counters — safe to read any time; written by the channel on protocol events.
+        const ConnectionStats& stats() const noexcept { return m_stats; }
+        ConnectionStats&       stats_mut() noexcept   { return m_stats; }
+
+        // Piggyback plumbing. The dispatch loop sets this to a sequence it needs to ACK; the next
+        // outgoing send on ANY channel attaches it to its header and clears the slot. If no send
+        // happens, the dispatch loop flushes a stand-alone ACK instead.
+        void                            set_pending_piggyback_ack(std::uint64_t seq)       noexcept { m_pending_piggyback_ack = seq; }
+        void                            clear_pending_piggyback_ack()                      noexcept { m_pending_piggyback_ack.reset(); }
+        std::optional<std::uint64_t>    pending_piggyback_ack() const                      noexcept { return m_pending_piggyback_ack; }
+        std::optional<std::uint64_t>    take_pending_piggyback_ack()                       noexcept { auto v = m_pending_piggyback_ack; m_pending_piggyback_ack.reset(); return v; }
 
     private:
 
@@ -104,6 +117,8 @@ namespace maroof::net
         UnreliableUnorderedChannel m_channel_1 {};
         UnreliableSequencedChannel m_channel_2 {};
         std::chrono::steady_clock::time_point m_last_heard_from {};
+        ConnectionStats m_stats {};
+        std::optional<std::uint64_t> m_pending_piggyback_ack {};
 
         // Ping/Pong state — sequence counter and send-time map for RTT sampling.
         std::uint64_t m_next_ping_seq { 0 };

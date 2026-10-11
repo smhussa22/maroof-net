@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -20,7 +21,9 @@ public:
 
     // Serialize payload into the internal buffer and return a span of the wire bytes.
     // No pending registration — fire and forget. Send the span before the next call to send().
-    std::span<const std::byte> send(std::span<const std::byte> payload);
+    // piggyback_ack: if present, the receiver will treat it as an ACK for its reliable channel.
+    std::span<const std::byte> send(std::span<const std::byte> payload,
+                                    std::optional<std::uint64_t> piggyback_ack = std::nullopt);
 
     // Deliver payload immediately. No dedup, no ordering, no state — every packet fires deliver.
     template <typename OnProcessPayload>
