@@ -61,8 +61,8 @@ namespace maroof::net
             header.fragment_id    = static_cast<std::uint16_t>(fi);
             header.fragment_count = static_cast<std::uint16_t>(fc);
 
-            std::vector<std::byte> buf(PACKET_HEADER_WIRE_SIZE + len);
-            serialize(header, frag_payload, std::span<std::byte>(buf)).value();
+            auto buf = m_pool->acquire(PACKET_HEADER_WIRE_SIZE + len);
+            serialize(header, frag_payload, buf.bytes()).value();
 
             PendingPacket pending
             {
@@ -73,9 +73,12 @@ namespace maroof::net
             };
 
             auto [it, inserted] = m_pending.emplace(seq, std::move(pending));
+            // Insert matching entry into the deadline-ordered queue, remember our iterator so
+            // handle_ack can remove it in O(1) and tick can reinsert on backoff.
+            it->second.timer_it = m_retransmit_order.emplace(it->second.retransmit, seq);
             ++m_in_flight;
 
-            wires.emplace_back(std::span<const std::byte>(it->second.serialized));
+            wires.emplace_back(it->second.serialized.bytes());
 
         }
 
@@ -91,13 +94,22 @@ namespace maroof::net
         std::vector<std::span<const std::byte>> retransmits {};
         const auto base_timeout = compute_rto(rtt);
 
-        for (auto& [seq, packet] : m_pending)
+        // Drain only expired entries from the deadline-ordered front — O(log N) per fire
+        // instead of the old O(N) scan over m_pending.
+        while (!m_retransmit_order.empty() && m_retransmit_order.begin()->first <= now)
         {
 
-            if (packet.retransmit > now)
+            // Extract the top node so we can mutate its key and reinsert it at the new deadline.
+            auto node = m_retransmit_order.extract(m_retransmit_order.begin());
+            const auto seq = node.mapped();
+
+            auto pend_it = m_pending.find(seq);
+            if (pend_it == m_pending.end())
             {
-                continue;
+                continue;  // defensive: entry was removed from m_pending but not from queue
             }
+
+            auto& packet = pend_it->second;
 
             if (packet.retry_count >= MAX_RETRIES)
             {
@@ -111,12 +123,16 @@ namespace maroof::net
             // multiplier stays <= 16x the base; MAX_TIMEOUT caps the absolute deadline.
             const std::uint32_t shift = packet.retry_count > 4u ? 4u : packet.retry_count;
             const auto backoff = std::min(base_timeout * (1u << shift), MAX_TIMEOUT);
-            packet.retransmit = now + backoff;
-            retransmits.push_back(std::span<const std::byte>(packet.serialized));
+            const auto new_deadline = now + backoff;
+            packet.retransmit = new_deadline;
+            retransmits.push_back(packet.serialized.bytes());
 
             // AIMD multiplicative decrease: every retransmit halves the window, floored at MIN_CWND.
-            // One halve per retransmit — a storm of drops crushes cwnd fast; a single blip barely dents it.
             m_cwnd = std::max(MIN_CWND, m_cwnd / 2u);
+
+            // Reinsert the extracted node at its new deadline; refresh the cached iterator.
+            node.key() = new_deadline;
+            packet.timer_it = m_retransmit_order.insert(std::move(node));
 
         }
 
@@ -138,6 +154,9 @@ namespace maroof::net
                                 now - it->second.first_sent_at);
         m_send_ack_latency.record(sample);
 
+        // Also drop the matching entry from the deadline-ordered queue so tick() won't fire on
+        // a packet we've already acked. O(1) because we cached the iterator at send time.
+        m_retransmit_order.erase(it->second.timer_it);
         m_pending.erase(it);
         if (m_in_flight > 0) --m_in_flight;
         m_cwnd = std::min(MAX_CWND, m_cwnd + 1u);  // AIMD additive increase

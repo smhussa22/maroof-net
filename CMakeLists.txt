@@ -16,6 +16,9 @@ add_library(maroof_net STATIC
     src/net/UnreliableSequencedChannel.cc
     src/net/Connection.cc
     src/net/LatencyHistogram.cc
+    src/net/PacketPool.cc
+    src/net/EpollReactor.cc
+    src/net/IoUringReactor.cc
 )
 target_include_directories(maroof_net PUBLIC include/)
 
@@ -31,6 +34,9 @@ target_link_libraries(flood_client PRIVATE maroof_net)
 
 add_executable(latency_bench examples/latency_bench.cc)
 target_link_libraries(latency_bench PRIVATE maroof_net)
+
+add_executable(echo_server_uring examples/echo_server_uring.cc)
+target_link_libraries(echo_server_uring PRIVATE maroof_net)
 
 # ---------- Tests (Google Test via FetchContent) ----------
 enable_testing()
@@ -71,6 +77,17 @@ add_executable(reliable_ordered_channel_test tests/reliable_ordered_channel_test
 target_link_libraries(reliable_ordered_channel_test PRIVATE maroof_net GTest::gtest_main)
 gtest_discover_tests(reliable_ordered_channel_test)
 
+add_executable(packet_pool_test tests/packet_pool_test.cc)
+target_link_libraries(packet_pool_test PRIVATE maroof_net GTest::gtest_main)
+gtest_discover_tests(packet_pool_test)
+
+add_executable(spsc_queue_test tests/spsc_queue_test.cc)
+target_link_libraries(spsc_queue_test PRIVATE maroof_net GTest::gtest_main)
+# pthreads for the two-thread integration test
+find_package(Threads REQUIRED)
+target_link_libraries(spsc_queue_test PRIVATE Threads::Threads)
+gtest_discover_tests(spsc_queue_test)
+
 # ---------- HdrHistogram_c (used by LatencyHistogram) ----------
 FetchContent_Declare(
     hdr_histogram
@@ -85,6 +102,36 @@ FetchContent_MakeAvailable(hdr_histogram)
 # The public header forward-declares struct hdr_histogram, so consumers of
 # maroof_net don't need to see hdr/*.h.
 target_link_libraries(maroof_net PRIVATE hdr_histogram_static)
+
+# ---------- liburing (used by IoUringReactor) ----------
+# liburing's build is autoconf-based, so FetchContent (CMake-only) doesn't fit cleanly.
+# ExternalProject drives its ./configure + make from inside our build tree.
+include(ExternalProject)
+set(LIBURING_INSTALL_DIR ${CMAKE_BINARY_DIR}/liburing-install)
+
+ExternalProject_Add(
+    liburing_ep
+    GIT_REPOSITORY   https://github.com/axboe/liburing.git
+    GIT_TAG          liburing-2.5
+    PREFIX           ${CMAKE_BINARY_DIR}/liburing
+    CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${LIBURING_INSTALL_DIR}
+    BUILD_COMMAND     make -j
+    INSTALL_COMMAND   make install
+    BUILD_IN_SOURCE   1
+    BUILD_BYPRODUCTS  ${LIBURING_INSTALL_DIR}/lib/liburing.a
+)
+
+# set_target_properties yells if the include dir doesn't exist at config time (CMake quirk).
+file(MAKE_DIRECTORY ${LIBURING_INSTALL_DIR}/include)
+
+add_library(uring STATIC IMPORTED)
+set_target_properties(uring PROPERTIES
+    IMPORTED_LOCATION             ${LIBURING_INSTALL_DIR}/lib/liburing.a
+    INTERFACE_INCLUDE_DIRECTORIES ${LIBURING_INSTALL_DIR}/include
+)
+add_dependencies(uring liburing_ep)
+
+target_link_libraries(maroof_net PRIVATE uring)
 
 add_executable(latency_histogram_test tests/latency_histogram_test.cc)
 target_link_libraries(latency_histogram_test PRIVATE maroof_net GTest::gtest_main)

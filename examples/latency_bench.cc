@@ -1,4 +1,5 @@
 #include <maroof/net/Connection.hh>
+#include <maroof/net/CpuAffinity.hh>
 #include <maroof/net/Endpoint.hh>
 #include <maroof/net/LatencyHistogram.hh>
 #include <maroof/net/PacketHeader.hh>
@@ -33,6 +34,7 @@ namespace
         std::string_view server { "127.0.0.1:9000" };
         std::uint32_t    rate     { 10'000 };   // messages per second
         std::uint32_t    duration { 10 };       // seconds
+        int              cpu      { -1 };       // -1 = don't pin
     };
 
     Flags parse_flags(int argc, char* argv[])
@@ -53,6 +55,11 @@ namespace
             else if (arg == "--duration" && i + 1 < argc)
             {
                 std::from_chars(argv[i + 1], argv[i + 1] + std::strlen(argv[i + 1]), f.duration);
+                ++i;
+            }
+            else if (arg == "--cpu" && i + 1 < argc)
+            {
+                std::from_chars(argv[i + 1], argv[i + 1] + std::strlen(argv[i + 1]), f.cpu);
                 ++i;
             }
         }
@@ -111,6 +118,18 @@ namespace
 int main(int argc, char* argv[])
 {
     const auto flags = parse_flags(argc, argv);
+
+    if (flags.cpu >= 0)
+    {
+        if (pin_current_thread_to(flags.cpu))
+        {
+            std::println("[cpu] pinned to core {}", flags.cpu);
+        }
+        else
+        {
+            std::println("[cpu] WARNING: failed to pin to core {} — continuing unpinned", flags.cpu);
+        }
+    }
 
     UdpSocket socket;
     if (!socket.set_nonblocking().has_value())

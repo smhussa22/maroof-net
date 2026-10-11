@@ -41,9 +41,40 @@ namespace maroof::net
       // Returns {bytes_written, sender_endpoint} on success.
       [[nodiscard]] std::expected<std::pair<std::size_t, Endpoint>, ErrorCode> recv_from(std::span<std::byte> buffer);
 
+      // --- Batched send/recv (recvmmsg / sendmmsg, Linux) ---
+      //
+      // One syscall carries up to BATCH_LIMIT (64) datagrams. For larger slot counts the caller
+      // can loop — short counts are the kernel's convention, not an error. These exist to
+      // amortize syscall overhead at high packet rates (10K+ msgs/sec) where ~100ns per syscall
+      // becomes a sizable fraction of per-packet work.
+
+      static constexpr std::size_t BATCH_LIMIT { 64 };
+
+      struct RecvSlot
+      {
+          std::span<std::byte> buf;      // caller-provided receive buffer for this slot
+          std::size_t          received; // written on return: bytes received into buf
+          Endpoint             peer;     // written on return: sender address
+      };
+
+      struct SendSlot
+      {
+          std::span<const std::byte> bytes;
+          Endpoint                   peer;
+      };
+
+      // Returns the number of datagrams actually received (0..min(slots.size(), BATCH_LIMIT)).
+      [[nodiscard]] std::expected<std::size_t, ErrorCode> recv_many(std::span<RecvSlot> slots) noexcept;
+
+      // Returns the number of datagrams actually sent.
+      [[nodiscard]] std::expected<std::size_t, ErrorCode> send_many(std::span<const SendSlot> slots) noexcept;
+
       // Puts the socket in non-blocking mode. After this, an empty-queue recv_from
       // returns WouldBlock instead of hanging the calling thread.
       [[nodiscard]] std::expected<void, ErrorCode> set_nonblocking();
+
+      // Raw fd — needed to register the socket with EpollReactor (or io_uring, etc).
+      int fd() const noexcept { return m_socket_fd; }
 
    private:
 

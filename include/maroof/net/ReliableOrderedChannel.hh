@@ -3,6 +3,7 @@
 
 #include <maroof/net/LatencyHistogram.hh>
 #include <maroof/net/PacketHeader.hh>
+#include <maroof/net/PacketPool.hh>
 #include <maroof/net/PendingPacket.hh>
 
 #include <array>
@@ -11,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -117,7 +119,8 @@ private:
 
     std::uint64_t m_next_send_seq { 0 };
     bool m_dead { false };
-    std::unordered_map<std::uint64_t, PendingPacket> m_pending {};  // in-flight packets awaiting ACK
+    std::unordered_map<std::uint64_t, PendingPacket> m_pending {};  // in-flight packets awaiting ACK (hash lookup by seq)
+    RetransmitQueue m_retransmit_order {};                           // same packets indexed by deadline for O(log N) tick
 
     // AIMD state. m_in_flight tracks the number of unacked packets (map size + a sanity counter).
     // m_cwnd evolves per ACK (+1, capped at MAX_CWND) and per retransmit (/2, floored at MIN_CWND).
@@ -139,6 +142,17 @@ private:
     // Trackable range: 1 ns to 60 s with 3-sigfig precision (~0.1% relative error, ~2 KB resident).
     // Covers everything from a LAN ping to a worst-case retry chain without re-tuning.
     LatencyHistogram m_send_ack_latency { std::chrono::nanoseconds { 1 }, std::chrono::seconds { 60 } };
+
+    // Fixed-size pool for every serialized packet this channel sends. Owned via unique_ptr so the
+    // channel stays movable (PacketPool itself is non-movable — PooledBuffers hold pointers back
+    // into it, which would dangle if the pool object moved).
+    //
+    // 8192 slots × 1220 bytes ≈ 10 MB resident per channel. Sized for ~100K msg/s workloads
+    // tolerating ~80ms of ACK delay. Past that, acquire() throws std::bad_alloc — explicit
+    // back-pressure beats silent latency jitter. Real production would feed this with a
+    // configurable, workload-tuned value.
+    static constexpr std::size_t POOL_CAPACITY { 8192 };
+    std::unique_ptr<PacketPool> m_pool { std::make_unique<PacketPool>(POOL_CAPACITY) };
 
 };
 
