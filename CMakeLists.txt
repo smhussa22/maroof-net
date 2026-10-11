@@ -46,6 +46,12 @@ target_link_libraries(simple_server PRIVATE maroof_net)
 add_executable(simple_client examples/simple_client.cc)
 target_link_libraries(simple_client PRIVATE maroof_net)
 
+add_executable(tcp_echo_server examples/tcp_echo_server.cc)
+target_link_libraries(tcp_echo_server PRIVATE maroof_net)
+
+add_executable(tcp_latency_bench examples/tcp_latency_bench.cc)
+target_link_libraries(tcp_latency_bench PRIVATE maroof_net)
+
 # ---------- Tests (Google Test via FetchContent) ----------
 enable_testing()
 
@@ -110,6 +116,32 @@ FetchContent_MakeAvailable(hdr_histogram)
 # The public header forward-declares struct hdr_histogram, so consumers of
 # maroof_net don't need to see hdr/*.h.
 target_link_libraries(maroof_net PRIVATE hdr_histogram_static)
+
+# ---------- Google Benchmark (used by micro-benchmarks) ----------
+FetchContent_Declare(
+    google_benchmark
+    GIT_REPOSITORY https://github.com/google/benchmark.git
+    GIT_TAG        v1.9.1
+)
+set(BENCHMARK_ENABLE_TESTING  OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_ENABLE_INSTALL  OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(google_benchmark)
+
+add_executable(pool_bench benchmarks/pool_bench.cc)
+target_link_libraries(pool_bench PRIVATE maroof_net benchmark::benchmark)
+
+add_executable(spsc_bench benchmarks/spsc_bench.cc)
+target_link_libraries(spsc_bench PRIVATE maroof_net benchmark::benchmark)
+find_package(Threads REQUIRED)
+target_link_libraries(spsc_bench PRIVATE Threads::Threads)
+
+add_executable(tick_bench benchmarks/tick_bench.cc)
+target_link_libraries(tick_bench PRIVATE maroof_net benchmark::benchmark)
+
+# Hand-rolled perf summary — one binary, one simple table of numbers.
+add_executable(perf_summary benchmarks/perf_summary.cc)
+target_link_libraries(perf_summary PRIVATE maroof_net Threads::Threads)
 
 # ---------- liburing (used by IoUringReactor) ----------
 # liburing's build is autoconf-based, so FetchContent (CMake-only) doesn't fit cleanly.

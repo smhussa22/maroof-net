@@ -79,16 +79,39 @@ Dependencies pulled in automatically: GoogleTest, HdrHistogram_c, liburing.
 
 ## Benchmarks
 
-Numbers from WSL2 on commodity x86_64, both client and server pinned to separate cores. Loopback, no injected loss.
+Release build, pinned to isolated cores on WSL2 x86_64. Reproduce with:
 
-| Workload | p50 | p99 | p99.9 | p99.99 |
-|---|---|---|---|---|
-| 10K msg/s (epoll server) | 44 µs | 140 µs | 298 µs | 564 µs |
-| 50K msg/s (epoll server) | 29 µs | 195 µs | 1.0 ms | — |
-| 10K msg/s (io_uring server) | 38 µs | 173 µs | 1.1 ms | 4.2 ms |
-| 50K msg/s (io_uring server) | 39 µs | 431 µs | 920 µs | 1.2 ms |
+```bash
+cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release
+cmake --build build-rel --target perf_summary -j
+taskset -c 2,3 ./build-rel/perf_summary
+```
 
-End-to-end send→ACK, including the full handshake, fragmentation, pending-map lookup, and histogram record. 100% of messages ACKed under all configurations.
+| Operation | Throughput | Latency |
+|---|---|---|
+| Serialize packet (28 B header + 64 B payload, CRC32) | ~5M ops/sec | 186 ns |
+| Parse packet (same, CRC verified) | ~5M ops/sec | 185 ns |
+| Pool acquire + release | ~238M ops/sec | 4.2 ns |
+| SPSC push + pop (uncontended) | ~761M ops/sec | 1.3 ns |
+| SPSC handoff (producer + consumer on separate cores) | ~285M ops/sec | 3.5 ns |
+
+End-to-end send→ACK over loopback with `examples/latency_bench.cc` (coordinated-omission-safe, median of 5 runs):
+
+| Load | p50 | p99 | p99.9 |
+|---|---|---|---|
+| 10K msg/s | 37 µs | 186 µs | 308 µs |
+| 50K msg/s | 30 µs | 294 µs | 585 µs |
+
+Reproduce:
+```bash
+# UDP library
+./echo_server       9000 --cpu 3 --quiet &
+./latency_bench --rate 10000 --duration 5 --cpu 2
+
+# TCP baseline
+./tcp_echo_server   9500 --cpu 3 &
+./tcp_latency_bench --server 127.0.0.1 --port 9500 --rate 10000 --duration 5 --cpu 2
+```
 
 ## Non-goals
 

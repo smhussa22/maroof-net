@@ -2,7 +2,9 @@
 .vscode/
 .cmake/
 build/
+build-*/
 cmake-build-debug/
+cmake-build-release/
 CLAUDE.md
 goals.md
 progress.md
