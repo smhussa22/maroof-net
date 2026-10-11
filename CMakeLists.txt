@@ -5,6 +5,12 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# When maroof_net is consumed as a subdirectory of another project, don't drag along the
+# tests / examples / benchmarks by default. Top-level builds get them for free.
+option(MAROOF_NET_BUILD_EXAMPLES   "Build maroof_net examples"   ${PROJECT_IS_TOP_LEVEL})
+option(MAROOF_NET_BUILD_TESTS      "Build maroof_net unit tests" ${PROJECT_IS_TOP_LEVEL})
+option(MAROOF_NET_BUILD_BENCHMARKS "Build maroof_net benchmarks" ${PROJECT_IS_TOP_LEVEL})
+
 # ---------- Library ----------
 add_library(maroof_net STATIC
     src/net/UdpSocket.cc
@@ -24,7 +30,9 @@ add_library(maroof_net STATIC
 )
 target_include_directories(maroof_net PUBLIC include/)
 
-# ---------- Examples ----------
+# ---------- Examples (only when top-level) ----------
+if (MAROOF_NET_BUILD_EXAMPLES)
+
 add_executable(echo_server examples/echo_server.cc)
 target_link_libraries(echo_server PRIVATE maroof_net)
 
@@ -52,10 +60,15 @@ target_link_libraries(tcp_echo_server PRIVATE maroof_net)
 add_executable(tcp_latency_bench examples/tcp_latency_bench.cc)
 target_link_libraries(tcp_latency_bench PRIVATE maroof_net)
 
+endif() # MAROOF_NET_BUILD_EXAMPLES
+
+# FetchContent is used by tests, benchmarks, and the always-on hdr_histogram / liburing deps.
+include(FetchContent)
+
 # ---------- Tests (Google Test via FetchContent) ----------
+if (MAROOF_NET_BUILD_TESTS)
 enable_testing()
 
-include(FetchContent)
 FetchContent_Declare(
     googletest
     GIT_REPOSITORY https://github.com/google/googletest.git
@@ -102,6 +115,8 @@ find_package(Threads REQUIRED)
 target_link_libraries(spsc_queue_test PRIVATE Threads::Threads)
 gtest_discover_tests(spsc_queue_test)
 
+endif() # MAROOF_NET_BUILD_TESTS
+
 # ---------- HdrHistogram_c (used by LatencyHistogram) ----------
 FetchContent_Declare(
     hdr_histogram
@@ -117,7 +132,10 @@ FetchContent_MakeAvailable(hdr_histogram)
 # maroof_net don't need to see hdr/*.h.
 target_link_libraries(maroof_net PRIVATE hdr_histogram_static)
 
-# ---------- Google Benchmark (used by micro-benchmarks) ----------
+
+# ---------- Google Benchmark + micro-benchmarks (only when top-level) ----------
+if (MAROOF_NET_BUILD_BENCHMARKS)
+
 FetchContent_Declare(
     google_benchmark
     GIT_REPOSITORY https://github.com/google/benchmark.git
@@ -128,13 +146,13 @@ set(BENCHMARK_ENABLE_INSTALL  OFF CACHE BOOL "" FORCE)
 set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(google_benchmark)
 
+find_package(Threads REQUIRED)
+
 add_executable(pool_bench benchmarks/pool_bench.cc)
 target_link_libraries(pool_bench PRIVATE maroof_net benchmark::benchmark)
 
 add_executable(spsc_bench benchmarks/spsc_bench.cc)
-target_link_libraries(spsc_bench PRIVATE maroof_net benchmark::benchmark)
-find_package(Threads REQUIRED)
-target_link_libraries(spsc_bench PRIVATE Threads::Threads)
+target_link_libraries(spsc_bench PRIVATE maroof_net benchmark::benchmark Threads::Threads)
 
 add_executable(tick_bench benchmarks/tick_bench.cc)
 target_link_libraries(tick_bench PRIVATE maroof_net benchmark::benchmark)
@@ -142,6 +160,8 @@ target_link_libraries(tick_bench PRIVATE maroof_net benchmark::benchmark)
 # Hand-rolled perf summary — one binary, one simple table of numbers.
 add_executable(perf_summary benchmarks/perf_summary.cc)
 target_link_libraries(perf_summary PRIVATE maroof_net Threads::Threads)
+
+endif() # MAROOF_NET_BUILD_BENCHMARKS
 
 # ---------- liburing (used by IoUringReactor) ----------
 # liburing's build is autoconf-based, so FetchContent (CMake-only) doesn't fit cleanly.
