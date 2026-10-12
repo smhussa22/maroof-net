@@ -193,7 +193,9 @@ add_dependencies(uring liburing_ep)
 
 target_link_libraries(maroof_net PRIVATE uring)
 
+if (MAROOF_NET_BUILD_TESTS)
 add_executable(latency_histogram_test tests/latency_histogram_test.cc)
 target_link_libraries(latency_histogram_test PRIVATE maroof_net GTest::gtest_main)
 gtest_discover_tests(latency_histogram_test)
+endif()
 
