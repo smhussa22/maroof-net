@@ -1,4 +1,4 @@
-# maroof::net
+# maroof.net
 
 A reliable-UDP transport library in modern C++23. Connection-oriented, message-oriented, with per-message reliability semantics — a dropped unreliable packet never stalls a reliable one. Shape is similar to ENet, GameNetworkingSockets, and Aeron.
 
