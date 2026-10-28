@@ -106,7 +106,7 @@ namespace maroof::net
 
         // Peer is considered dead if no packet arrives within this window. Any inbound packet
         // (Data/Ack/Pong/…) resets the timer via note_activity.
-        static constexpr std::chrono::seconds HEARTBEAT_DEATH { 5 };
+        static constexpr std::chrono::seconds HEARTBEAT_DEATH { 60 };
 
         Endpoint m_peer;
         State m_state { State::Disconnected };
